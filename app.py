@@ -151,7 +151,6 @@ def calculate_admission_roadmap(dob):
             roadmap.append(f"{target} 學年 - {grade}")
     return roadmap
 
-# [功能] 加入暫存的回調函數
 def add_child_callback():
     c_name = st.session_state.input_c_name
     note = st.session_state.input_note
@@ -180,7 +179,6 @@ def add_child_callback():
     st.session_state.input_c_name = "" 
     st.session_state.input_note = ""
 
-# [新增] 最終送出的回調函數
 def submit_all_callback():
     p_name = st.session_state.input_p_name
     p_title = st.session_state.input_p_title
@@ -218,6 +216,7 @@ def submit_all_callback():
         
         if sync_data_to_gsheets(updated_df):
             st.session_state['msg_success'] = f"✅ 成功新增 {len(new_rows)} 位幼兒資料！"
+            
             st.session_state.temp_children = []
             st.session_state.input_p_name = ""
             st.session_state.input_phone = ""
@@ -234,7 +233,6 @@ st.title("🏫 新生管理系統")
 menu = st.sidebar.radio("系統切換", ["👶 新生報名管理", "👩‍🏫 師生人力預估系統"])
 
 if menu == "👶 新生報名管理":
-    # 初始化訊息狀態
     if 'msg_success' not in st.session_state: st.session_state['msg_success'] = None
     if 'msg_error' not in st.session_state: st.session_state['msg_error'] = None
     if 'msg_warning' not in st.session_state: st.session_state['msg_warning'] = None
@@ -258,7 +256,6 @@ if menu == "👶 新生報名管理":
     if not df.empty:
         df['已聯繫'] = df['聯繫狀態'].apply(lambda x: True if str(x).strip() == '已聯繫' else False)
 
-    # [新增] Tab 2: 🔍 快速查詢
     tab1, tab2, tab3, tab4 = st.tabs(["➕ 新增報名", "🔍 快速查詢", "📂 新生資料庫", "📅 未來入學名單預覽"])
 
     # --- Tab 1: 新增 ---
@@ -292,27 +289,19 @@ if menu == "👶 新生報名管理":
         else:
             st.info("尚未加入任何幼兒資料。請填寫上方資料並按下「加入暫存清單」。")
 
-    # --- Tab 2: 快速查詢 (新功能) ---
+    # --- Tab 2: 快速查詢 ---
     with tab2:
         st.subheader("🔍 快速查詢報名資料")
         st.caption("輸入電話、家長姓名或幼兒姓名，確認資料是否已建立。")
-        
         keyword = st.text_input("請輸入關鍵字", placeholder="例如：0912345678 或 陳大寶")
-        
         if keyword:
             if not df.empty:
-                # 搜尋邏輯：將整列轉字串後比對
                 mask = df.astype(str).apply(lambda x: x.str.contains(keyword, case=False)).any(axis=1)
                 result_df = df[mask]
-                
                 if not result_df.empty:
                     st.success(f"✅ 找到 {len(result_df)} 筆資料：")
-                    
-                    # 顯示簡化版的結果，方便閱讀
                     show_cols = ['報名狀態', '幼兒姓名', '家長稱呼', '電話', '預計入學資訊', '備註']
-                    # 確保欄位存在
                     valid_cols = [c for c in show_cols if c in result_df.columns]
-                    
                     st.dataframe(result_df[valid_cols], use_container_width=True)
                 else:
                     st.warning("❌ 查無資料，請確認關鍵字是否正確，或前往「新增報名」頁籤建立資料。")
@@ -407,9 +396,9 @@ if menu == "👶 新生報名管理":
                     grade = get_grade_for_year(dob_obj, search_year)
                     if grade in roster:
                         status_icon = "🟢" if "已確認" in row['報名狀態'] else "🟡"
+                        # [修正] 移除 '幼兒姓名' 欄位，只保留家長資訊
                         roster[grade].append({
                             "狀態": f"{status_icon} {row['報名狀態']}",
-                            "幼兒姓名": row['幼兒姓名'],
                             "家長": row['家長稱呼'],
                             "電話": row['電話'],
                             "備註": row['備註']
