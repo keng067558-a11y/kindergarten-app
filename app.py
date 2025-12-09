@@ -161,7 +161,6 @@ if menu == "👶 新生報名管理":
     with tab1:
         st.subheader("輸入資料")
         
-        # [修改] 介面簡化：移除左右欄位，單欄顯示
         st.markdown("##### 📌 報名狀態")
         status = st.selectbox("狀態判定", ["排隊候補", "已確認/已繳費", "考慮中/參觀"], index=0)
         
@@ -181,29 +180,56 @@ if menu == "👶 新生報名管理":
                 current_df = load_registered_data()
                 final_child_name = child_name if child_name else ""
                 
-                # [修改] 自動計算一個預設的入學年段 (背景執行，不顯示給使用者看)
-                # 這樣師生比預估系統才會有資料可以算
-                auto_plans = calculate_admission_roadmap(dob)
-                # 取第一個可行的入學時間，若無則標示待確認
-                auto_plan = auto_plans[0] if auto_plans else "年齡不符/待確認"
+                # [新增] 重複資料檢核機制
+                is_duplicate = False
+                duplicate_msg = ""
+                
+                # 處理輸入電話格式，確保一致 (去除空白，補0)
+                input_phone = str(phone).strip()
+                if len(input_phone) == 9 and input_phone.startswith('9'):
+                    input_phone = '0' + input_phone
+                
+                if not current_df.empty:
+                    # 篩選出電話相同的資料
+                    same_phone_df = current_df[current_df['電話'] == input_phone]
+                    
+                    if not same_phone_df.empty:
+                        # 情況 A: 幼兒姓名有填，且資料庫裡有完全一樣的姓名+電話 -> 重複
+                        if final_child_name:
+                            if (same_phone_df['幼兒姓名'] == final_child_name).any():
+                                is_duplicate = True
+                                duplicate_msg = f"已存在：幼兒「{final_child_name}」 (電話 {input_phone})"
+                        # 情況 B: 幼兒姓名沒填，但資料庫裡有同樣家長+電話 -> 視為重複
+                        else:
+                            parent_full = f"{p_name} {p_title}"
+                            if (same_phone_df['家長稱呼'] == parent_full).any():
+                                is_duplicate = True
+                                duplicate_msg = f"已存在：家長「{parent_full}」 (電話 {input_phone})"
 
-                new_row = pd.DataFrame([{
-                    '報名狀態': status,
-                    '已聯繫': False,
-                    '登記日期': to_roc_str(date.today()),
-                    '幼兒姓名': final_child_name,
-                    '家長稱呼': f"{p_name} {p_title}",
-                    '電話': str(phone), 
-                    '幼兒生日': to_roc_str(dob),
-                    '預計入學資訊': auto_plan, # 自動填入
-                    '推薦人': referrer,
-                    '備註': note
-                }])
-                updated_df = pd.concat([current_df, new_row], ignore_index=True)
-                if sync_data_to_gsheets(updated_df):
-                    st.success(f"✅ 已新增資料 (家長：{p_name} {p_title})")
-                    st.session_state.df_cache = load_registered_data()
-                    st.rerun()
+                if is_duplicate:
+                    st.error(f"❌ 無法儲存！系統偵測到重複報名資料。\n({duplicate_msg})")
+                else:
+                    # 通過檢查，執行儲存
+                    auto_plans = calculate_admission_roadmap(dob)
+                    auto_plan = auto_plans[0] if auto_plans else "年齡不符/待確認"
+
+                    new_row = pd.DataFrame([{
+                        '報名狀態': status,
+                        '已聯繫': False,
+                        '登記日期': to_roc_str(date.today()),
+                        '幼兒姓名': final_child_name,
+                        '家長稱呼': f"{p_name} {p_title}",
+                        '電話': input_phone, 
+                        '幼兒生日': to_roc_str(dob),
+                        '預計入學資訊': auto_plan,
+                        '推薦人': referrer,
+                        '備註': note
+                    }])
+                    updated_df = pd.concat([current_df, new_row], ignore_index=True)
+                    if sync_data_to_gsheets(updated_df):
+                        st.success(f"✅ 已新增資料 (家長：{p_name} {p_title})")
+                        st.session_state.df_cache = load_registered_data()
+                        st.rerun()
             else:
                 st.error("❌ 請確認「家長姓氏」與「電話」已填寫")
 
@@ -230,20 +256,7 @@ if menu == "👶 新生報名管理":
 
             display_df = df.copy()
 
-            # [修改] 調整欄位順序：預計入學資訊 (入學年段) 移到最後
-            main_cols = [
-                '已聯繫', 
-                '報名狀態', 
-                '幼兒生日',
-                '登記日期',       
-                '家長稱呼', 
-                '電話', 
-                '推薦人', 
-                '備註',
-                '幼兒姓名',
-                '預計入學資訊' # <--- 移到最後
-            ]
-            
+            main_cols = ['已聯繫', '報名狀態', '幼兒生日', '登記日期', '家長稱呼', '電話', '推薦人', '備註', '幼兒姓名', '預計入學資訊']
             for c in main_cols:
                 if c not in display_df.columns: display_df[c] = ""
             display_df['電話'] = display_df['電話'].astype(str)
