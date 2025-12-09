@@ -6,13 +6,6 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import time
 
-# [新增] 引入即時搜尋套件
-try:
-    from streamlit_keyup import st_keyup
-except ImportError:
-    def st_keyup(label, placeholder=None, key=None):
-        return st.text_input(label, placeholder=placeholder, key=key)
-
 # ==========================================
 # 🎨 自定義 CSS
 # ==========================================
@@ -29,7 +22,6 @@ st.markdown("""
         margin-bottom: 15px;
         border-left: 5px solid #4CAF50;
         transition: transform 0.2s;
-        position: relative;
     }
     .student-card:hover { transform: translateY(-2px); box-shadow: 0 5px 10px rgba(0,0,0,0.1); }
     .card-title { font-size: 18px; font-weight: bold; color: #333; }
@@ -43,6 +35,13 @@ st.markdown("""
     .tag-blue { background-color: #17a2b8; }
 </style>
 """, unsafe_allow_html=True)
+
+# [新增] 引入即時搜尋套件 (防呆)
+try:
+    from streamlit_keyup import st_keyup
+except ImportError:
+    def st_keyup(label, placeholder=None, key=None):
+        return st.text_input(label, placeholder=placeholder, key=key)
 
 # ==========================================
 # 🔒 安全鎖
@@ -183,6 +182,7 @@ def calculate_admission_roadmap(dob):
 def add_child_callback():
     c_name = st.session_state.input_c_name
     note = st.session_state.input_note
+    # 預設狀態
     status = "排隊候補" 
     y = st.session_state.year_add
     m = st.session_state.month_add
@@ -201,7 +201,6 @@ def add_child_callback():
     st.session_state.input_c_name = "" 
     st.session_state.input_note = ""
 
-# [新增] 刪除暫存項目的回調函數
 def remove_child_callback(index):
     if 0 <= index < len(st.session_state.temp_children):
         st.session_state.temp_children.pop(index)
@@ -309,10 +308,9 @@ if menu == "👶 新增報名":
                 </div>
                 """, unsafe_allow_html=True)
             with c_del:
-                st.write("") # 排版佔位
+                st.write("") 
                 st.button(f"🗑️", key=f"del_temp_{i}", on_click=remove_child_callback, args=(i,), type="primary")
-            
-            st.write("") # 間隔
+            st.write("") 
 
         st.button("✅ 確認送出所有資料", type="primary", on_click=submit_all_callback)
     else:
@@ -335,31 +333,46 @@ elif menu == "📂 資料管理中心":
         if search_keyword:
             display_df = display_df[display_df.astype(str).apply(lambda x: x.str.contains(search_keyword, case=False)).any(axis=1)]
 
+        # 表格模式 (可編輯)
         if view_mode:
             cols_config = {
                 "已聯繫": st.column_config.CheckboxColumn("已聯繫", width="small"),
                 "報名狀態": st.column_config.SelectboxColumn("狀態", options=["排隊候補", "已確認/已繳費", "考慮中/參觀"], width="medium"),
                 "電話": st.column_config.TextColumn("電話", width="medium"),
+                "預計入學資訊": st.column_config.TextColumn("預計入學資訊", width="large", help="可直接修改入學年段"), # [修改] 這裡允許編輯
                 "備註": st.column_config.TextColumn("備註", width="large")
             }
-            main_cols = ['已聯繫', '報名狀態', '家長稱呼', '電話', '幼兒姓名', '幼兒生日', '備註']
+            
+            # [修改] 加入 '預計入學資訊' 到欄位列表，並放在顯眼位置
+            main_cols = ['已聯繫', '報名狀態', '預計入學資訊', '家長稱呼', '電話', '幼兒姓名', '幼兒生日', '備註']
             for c in main_cols:
                 if c not in display_df.columns: display_df[c] = ""
-            edit_df = st.data_editor(display_df[main_cols], column_config=cols_config, hide_index=True, use_container_width=True, num_rows="fixed", height=500)
+                
+            edit_df = st.data_editor(
+                display_df[main_cols], 
+                column_config=cols_config, 
+                hide_index=True, 
+                use_container_width=True, 
+                num_rows="fixed",
+                height=500
+            )
+            
             c1, c2 = st.columns([1, 1])
             with c1:
                 del_options = edit_df.apply(lambda x: f"#{x.name+1} | {x['家長稱呼']} | {x['電話']}", axis=1).tolist()
                 delete_list = st.multiselect("🗑️ 批次刪除", del_options)
+            
             with c2:
                 st.write("")
                 st.write("")
-                if st.button("💾 儲存變更", type="primary"):
+                if st.button("💾 儲存變更 (含入學資訊修改)", type="primary"):
                     full_df = df.copy()
                     for idx, row in edit_df.iterrows():
                         if idx in full_df.index:
                             full_df.at[idx, '報名狀態'] = row['報名狀態']
                             full_df.at[idx, '已聯繫'] = row['已聯繫']
                             full_df.at[idx, '備註'] = row['備註']
+                            full_df.at[idx, '預計入學資訊'] = row['預計入學資訊'] # [修改] 儲存入學資訊
                     final_df = full_df.copy()
                     if delete_list:
                         indices = [int(x.split("|")[0].replace("#", "").strip())-1 for x in delete_list]
@@ -367,13 +380,18 @@ elif menu == "📂 資料管理中心":
                     if sync_data_to_gsheets(final_df):
                         st.success("更新成功！")
                         st.rerun()
+
+        # 卡片模式 (純瀏覽)
         else:
             st.caption(f"共找到 {len(display_df)} 筆資料")
+            
             for idx, row in display_df.iterrows():
                 status_color = "tag-yellow"
                 if "已確認" in str(row['報名狀態']): status_color = "tag-green"
                 elif "考慮" in str(row['報名狀態']): status_color = "tag-blue"
+                
                 contact_icon = "✅ 已聯繫" if row['已聯繫'] else "📞 未聯繫"
+                
                 st.markdown(f"""
                 <div class="student-card">
                     <div style="display:flex; justify-content:space-between;">
@@ -381,7 +399,10 @@ elif menu == "📂 資料管理中心":
                         <span class="card-tag {status_color}">{row['報名狀態']}</span>
                     </div>
                     <div class="card-subtitle">
-                        👶 <b>{row['幼兒姓名']}</b> | 生日: {row['幼兒生日']} | {row['預計入學資訊']}
+                        👶 <b>{row['幼兒姓名']}</b> | 生日: {row['幼兒生日']}
+                    </div>
+                    <div style="background:#eef; padding:5px; border-radius:5px; font-weight:bold; color:#336; margin-bottom:5px;">
+                        📅 {row['預計入學資訊']}
                     </div>
                     <div style="font-size:13px; color:#555; background:#f9f9f9; padding:5px; border-radius:5px;">
                         💬 {row['備註'] if row['備註'] else "無備註"}
@@ -391,11 +412,13 @@ elif menu == "📂 資料管理中心":
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
-            st.info("💡 如需編輯資料或刪除，請切換右上角的「表格模式」。")
+                
+            st.info("💡 如需編輯「預計入學資訊」或刪除資料，請切換右上角的「表格模式」。")
 
 # --- 頁面 3: 未來入學預覽 ---
 elif menu == "📅 未來入學預覽":
     st.markdown("### 📅 未來入學名單預覽")
+    
     c_year, c_info = st.columns([1, 3])
     with c_year:
         this_year = date.today().year - 1911
@@ -404,6 +427,7 @@ elif menu == "📅 未來入學預覽":
     st.divider()
 
     if not df.empty:
+        # 資料整理
         roster = {"托嬰中心": [], "幼幼班": [], "小班": [], "中班": [], "大班": []}
         stats = {"total": 0, "confirmed": 0, "contacted": 0}
         
@@ -417,6 +441,7 @@ elif menu == "📅 未來入學預覽":
                     stats['total'] += 1
                     if row['已聯繫']: stats['contacted'] += 1
                     if "已確認" in row['報名狀態']: stats['confirmed'] += 1
+                    
                     roster[grade].append({
                         "index": idx,
                         "已聯繫": row['已聯繫'],
@@ -427,17 +452,19 @@ elif menu == "📅 未來入學預覽":
                     })
             except: pass
 
+        # 頂部戰情板
         c1, c2, c3 = st.columns(3)
         c1.metric("符合資格總人數", stats['total'])
         c2.metric("已確認入學", stats['confirmed'])
         c3.metric("聯絡進度", f"{int(stats['contacted']/stats['total']*100)}%" if stats['total']>0 else "0%")
+        
         st.progress(stats['contacted']/stats['total'] if stats['total']>0 else 0)
         st.write("")
 
-        grade_colors = {"托嬰中心": "#e3f2fd", "幼幼班": "#fff3e0", "小班": "#e8f5e9", "中班": "#f3e5f5", "大班": "#ffebee"}
         for g in ["托嬰中心", "幼幼班", "小班", "中班", "大班"]:
             students = roster[g]
             count = len(students)
+            
             with st.expander(f"{g} (共 {count} 人)", expanded=(count > 0)):
                 if count > 0:
                     class_df = pd.DataFrame(students)
@@ -454,6 +481,7 @@ elif menu == "📅 未來入學預覽":
                         use_container_width=True,
                         key=f"editor_{search_year}_{g}"
                     )
+                    
                     if st.button(f"💾 儲存 {g} 變更", key=f"btn_{search_year}_{g}"):
                         full_df = df.copy()
                         has_change = False
@@ -463,6 +491,7 @@ elif menu == "📅 未來入學預覽":
                             if full_df.at[orig_idx, '已聯繫'] != new_val:
                                 full_df.at[orig_idx, '已聯繫'] = new_val
                                 has_change = True
+                        
                         if has_change:
                             if sync_data_to_gsheets(full_df):
                                 st.success("更新成功！")
@@ -471,9 +500,11 @@ elif menu == "📅 未來入學預覽":
                 else:
                     st.caption("尚無符合資格的學生")
 
-# --- 頁面 4: 師資人力預估 ---
+# --- 頁面 4: 師資人力預估 (維持原樣) ---
 elif menu == "👩‍🏫 師資人力預估":
     st.header("📊 未來學年師生人力預估")
+    # ... (此部分邏輯與之前相同，為節省篇幅直接沿用，若需要修改請告知) ...
+    # 這裡放原本的人力預估代碼
     with st.expander("⚙️ 師生比參數設定", expanded=False):
         c1, c2, c3 = st.columns(3)
         ratio_daycare = c1.number_input("托嬰 (0-2歲)", value=5)
