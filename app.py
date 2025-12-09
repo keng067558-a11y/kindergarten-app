@@ -270,7 +270,7 @@ if menu == "👶 新生報名管理":
 
     # --- Tab 1: 新增 ---
     with tab1:
-        st.subheader("第一步：填寫家長資料 (共用)")
+        st.subheader("第一步：填寫家長資料")
         c_p1, c_p2, c_p3 = st.columns([2, 1, 2])
         p_name = c_p1.text_input("家長姓氏 (必填)", key="input_p_name")
         p_title = c_p2.selectbox("稱謂", ["先生", "小姐", "爸爸", "媽媽"], key="input_p_title")
