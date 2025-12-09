@@ -398,7 +398,6 @@ elif menu == "📂 資料管理中心":
                             if i not in st.session_state.edited_rows: st.session_state.edited_rows[i] = {}
                             st.session_state.edited_rows[i][c] = st.session_state[k]
 
-                        # [修正] 所有的 key 都加上 key_suffix
                         k_contact = f"contact_{idx}_{key_suffix}"
                         st.checkbox("已聯繫", value=row['已聯繫'], key=k_contact, on_change=update_value, args=(idx, '已聯繫', k_contact))
                         
@@ -410,14 +409,20 @@ elif menu == "📂 資料管理中心":
                         if curr_val not in status_opts: status_opts.insert(0, curr_val)
                         st.selectbox("報名狀態", status_opts, index=status_opts.index(curr_val), key=k_status, on_change=update_value, args=(idx, '報名狀態', k_status))
                         
+                        # [修正] 下拉選單改為「自動計算+手動 override」
                         k_grade = f"grade_{idx}_{key_suffix}"
                         current_plan = row['預計入學資訊']
+                        
+                        # 1. 計算該幼兒所有可能的入學組合
                         try:
                             dob_parts = str(row['幼兒生日']).split('/')
                             dob_obj = date(int(dob_parts[0])+1911, int(dob_parts[1]), int(dob_parts[2]))
                             possible_plans = calculate_admission_roadmap(dob_obj)
                         except: possible_plans = [current_plan, "無法計算"]
+                        
+                        # 2. 確保目前的資料在選項中
                         if current_plan not in possible_plans: possible_plans.insert(0, current_plan)
+                        
                         st.selectbox("入學年段", possible_plans, index=possible_plans.index(current_plan), key=k_grade, on_change=update_value, args=(idx, '預計入學資訊', k_grade))
                         
                         k_note = f"note_{idx}_{key_suffix}"
@@ -461,7 +466,7 @@ elif menu == "📂 資料管理中心":
     else:
         st.info("目前無資料。")
 
-# --- 頁面 3: 未來入學預覽 ---
+# --- 頁面 3: 未來入學預覽 (連動優化版) ---
 elif menu == "📅 未來入學預覽":
     st.markdown("### 📅 未來入學名單預覽")
     c_year, c_info = st.columns([1, 3])
@@ -478,9 +483,23 @@ elif menu == "📅 未來入學預覽":
         
         for idx, row in df.iterrows():
             try:
-                dob_parts = str(row['幼兒生日']).split('/')
-                dob_obj = date(int(dob_parts[0])+1911, int(dob_parts[1]), int(dob_parts[2]))
-                grade = get_grade_for_year(dob_obj, search_year)
+                # [關鍵修正] 優先檢查「預計入學資訊」是否手動指定了該年份
+                manual_plan = str(row['預計入學資訊'])
+                target_year_str = f"{search_year} 學年"
+                
+                grade = None
+                
+                # 1. 先看手動欄位有沒有包含 "115 學年"
+                if target_year_str in manual_plan:
+                    parts = manual_plan.split(" - ")
+                    if len(parts) > 1:
+                        grade = parts[1].strip() # 抓出 "小班"
+                
+                # 2. 如果手動欄位沒寫，才用生日算 (Fallback)
+                if not grade:
+                    dob_parts = str(row['幼兒生日']).split('/')
+                    dob_obj = date(int(dob_parts[0])+1911, int(dob_parts[1]), int(dob_parts[2]))
+                    grade = get_grade_for_year(dob_obj, search_year)
                 
                 status_text = str(row['報名狀態'])
                 is_confirmed = "已安排" in status_text or "已確認" in status_text or "繳費" in status_text
@@ -597,11 +616,25 @@ elif menu == "👩‍🏫 師資人力預估":
                     plan_str = str(row['預計入學資訊'])
                     status = str(row['報名狀態'])
                     try:
-                        dob_str = str(row['幼兒生日'])
-                        dob_parts = dob_str.split('/')
-                        dob_obj = date(int(dob_parts[0])+1911, int(dob_parts[1]), int(dob_parts[2]))
-                        grade = get_grade_for_year(dob_obj, year)
-                        target_grade = grade if grade in confirmed_counts else None
+                        # [修改] 師資計算也連動手動欄位
+                        target_grade = None
+                        target_year_str = f"{year} 學年"
+                        
+                        if target_year_str in plan_str:
+                            parts = plan_str.split(" - ")
+                            if len(parts) > 1:
+                                target_grade = parts[1].strip()
+                        
+                        if not target_grade:
+                            dob_str = str(row['幼兒生日'])
+                            dob_parts = dob_str.split('/')
+                            dob_obj = date(int(dob_parts[0])+1911, int(dob_parts[1]), int(dob_parts[2]))
+                            target_grade = get_grade_for_year(dob_obj, year)
+
+                        # 過濾掉畢業或未達入學年齡的
+                        if target_grade not in confirmed_counts:
+                            target_grade = None
+
                         if target_grade:
                             if "已安排" in status or "已確認" in status: confirmed_counts[target_grade] += 1
                             else: waitlist_counts[target_grade] += 1
