@@ -4,7 +4,7 @@ from datetime import date, datetime
 import math
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-import time # 用來強制更新
+import time
 
 # ==========================================
 # 🔒 安全鎖
@@ -28,7 +28,7 @@ if not check_password():
     st.stop()
 
 # ==========================================
-# ⚙️ 設定與連線 (加入快取機制)
+# ⚙️ 設定與連線 (快取機制)
 # ==========================================
 SHEET_NAME = 'kindergarten_db'
 STUDENT_CSV = 'students.csv'
@@ -45,7 +45,6 @@ def connect_to_gsheets():
     client = get_gsheet_client()
     return client.open(SHEET_NAME).sheet1
 
-# 設定 ttl=0 代表不強製長時間快取，但利用 st.cache_data 的 clear 功能來管理更新
 @st.cache_data(ttl=60)
 def load_registered_data():
     try:
@@ -93,7 +92,6 @@ def sync_data_to_gsheets(new_df):
         if not save_df.empty:
             sheet.append_rows(save_df.values.tolist())
             
-        # ⚠️ 關鍵：強制清除快取，確保立刻看到更新
         load_registered_data.clear()
         return True
     except Exception as e:
@@ -108,8 +106,6 @@ def roc_date_input(label, default_date=None, key_suffix=""):
     c1, c2, c3 = st.columns([1, 1, 1])
     if default_date is None: default_date = date.today()
     
-    # 這裡使用 session_state 來控制預設值，讓雙胞胎操作更方便
-    # 如果 session 中有存上次的日期，就用上次的（方便雙胞胎），否則用預設
     y_key = f"y_{key_suffix}"
     m_key = f"m_{key_suffix}"
     d_key = f"d_{key_suffix}"
@@ -155,14 +151,11 @@ def calculate_admission_roadmap(dob):
             roadmap.append(f"{target} 學年 - {grade}")
     return roadmap
 
-# Callback 函數：當按下「加入暫存」時執行
 def add_child_callback():
-    # 讀取輸入框的值
     c_name = st.session_state.input_c_name
     note = st.session_state.input_note
     status = st.session_state.input_status
     
-    # 讀取日期
     y = st.session_state.y_add
     m = st.session_state.m_add
     d = st.session_state.d_add
@@ -171,11 +164,9 @@ def add_child_callback():
     except:
         dob_obj = date.today()
         
-    # 計算入學資訊
     auto_plans = calculate_admission_roadmap(dob_obj)
     auto_plan = auto_plans[0] if auto_plans else "年齡不符/待確認"
     
-    # 加入清單
     st.session_state.temp_children.append({
         "幼兒姓名": c_name if c_name else "(未填)",
         "幼兒生日": to_roc_str(dob_obj),
@@ -184,7 +175,6 @@ def add_child_callback():
         "備註": note
     })
     
-    # 清空姓名和備註，但「保留日期」給雙胞胎用
     st.session_state.input_c_name = "" 
     st.session_state.input_note = ""
 
@@ -231,17 +221,14 @@ if menu == "👶 新生報名管理":
             st.selectbox("報名狀態", ["排隊候補", "已確認/已繳費", "考慮中/參觀"], key="input_status")
             st.text_area("備註事項", placeholder="例如：雙胞胎哥哥、過敏...", height=100, key="input_note")
 
-        # 使用 on_click 回調函數，確保按下去的瞬間就清空輸入框
         st.button("⬇️ 加入暫存清單 (還有下一位)", on_click=add_child_callback, type="secondary")
 
-        # 顯示暫存區
         if st.session_state.temp_children:
             st.success(f"目前已暫存 {len(st.session_state.temp_children)} 位幼兒，確認無誤請按下方紅色按鈕送出。")
             st.table(pd.DataFrame(st.session_state.temp_children))
             
             if st.button("✅ 確認送出所有資料 (結束)", type="primary"):
                 if p_name and phone:
-                    # 再次檢查輸入框是否還有殘留文字 (防呆)
                     if st.session_state.input_c_name != "":
                         st.warning("⚠️ 警告：您輸入框裡還有名字，但沒有按「加入暫存」。請先加入暫存，或清空輸入框再送出。")
                     else:
@@ -268,7 +255,16 @@ if menu == "👶 新生報名管理":
                         if sync_data_to_gsheets(updated_df):
                             st.balloons()
                             st.success(f"✅ 成功新增 {len(new_rows)} 位幼兒資料！")
-                            st.session_state.temp_children = [] # 清空
+                            
+                            # === [修改重點] 清空所有輸入欄位與暫存 ===
+                            st.session_state.temp_children = [] 
+                            st.session_state.input_p_name = ""
+                            st.session_state.input_phone = ""
+                            st.session_state.input_referrer = ""
+                            st.session_state.input_c_name = ""
+                            st.session_state.input_note = ""
+                            # ====================================
+                            
                             st.rerun()
                 else:
                     st.error("❌ 無法送出：請確認「家長姓氏」與「電話」已填寫")
@@ -319,7 +315,6 @@ if menu == "👶 新生報名管理":
             
             col_del, col_save = st.columns([2, 1])
             with col_del:
-                # [新增] 加上 index 識別，解決雙胞胎資料長太像無法刪除的問題
                 del_options = edit_df.apply(lambda x: f"#{x.name+1} | {x['家長稱呼']} | {x['幼兒姓名']} ({x['幼兒生日']})", axis=1).tolist()
                 delete_list = st.multiselect("🗑️ 批次刪除 (含編號)", del_options)
             
@@ -334,7 +329,6 @@ if menu == "👶 新生報名管理":
                             full_df.at[idx, '幼兒姓名'] = row['幼兒姓名']
                     final_df = full_df.copy()
                     if delete_list:
-                        # 解析出 index (例如 "#5 | ..." -> 4)
                         indices_to_drop = [int(item.split("|")[0].replace("#", "").strip()) - 1 for item in delete_list]
                         final_df = final_df.drop(indices_to_drop)
                     
