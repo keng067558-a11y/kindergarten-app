@@ -109,19 +109,9 @@ def load_registered_data():
         headers = data[0]
         rows = data[1:]
         df = pd.DataFrame(rows, columns=headers)
-        
-        # [關鍵修正] 1. 電話格式化
         if '電話' in df.columns:
             df['電話'] = df['電話'].astype(str).str.strip()
             df['電話'] = df['電話'].apply(lambda x: '0' + x if len(x) == 9 and x.startswith('9') else x)
-        
-        # [關鍵修正] 2. 確保狀態欄位存在，且 '已聯繫' 欄位是布林值
-        if '聯繫狀態' not in df.columns: df['聯繫狀態'] = '未聯繫'
-        if '報名狀態' not in df.columns: df['報名狀態'] = '排隊中'
-        
-        # [關鍵修正] 3. 創建一個布林值欄位供 checkbox 使用
-        df['已聯繫'] = df['聯繫狀態'].apply(lambda x: True if str(x).strip() == '已聯繫' else False)
-        
         return df
     except Exception as e:
         return pd.DataFrame()
@@ -136,8 +126,6 @@ def sync_data_to_gsheets(new_df):
     try:
         sheet = connect_to_gsheets()
         save_df = new_df.copy()
-        
-        # [關鍵] 將布林值轉回字串，存入 Google Sheet
         if '已聯繫' in save_df.columns:
             save_df['聯繫狀態'] = save_df['已聯繫'].apply(lambda x: '已聯繫' if x is True else '未聯繫')
             save_df = save_df.drop(columns=['已聯繫'])
@@ -303,11 +291,7 @@ if st.session_state['msg_warning']:
     st.session_state['msg_warning'] = None
 
 df = load_registered_data()
-# 統一處理資料，讓 df 只有最原始的欄位，沒有額外處理過的欄位
-# 這樣可以讓所有功能都讀取到一致的資料
-if not df.empty and '聯繫狀態' not in df.columns: df['聯繫狀態'] = '未聯繫'
-if not df.empty and '報名狀態' not in df.columns: df['報名狀態'] = '排隊中'
-# 注意：這裡不創建 df['已聯繫']，而是在需要 checkbox 的地方即時計算
+# 這裡不創建 '已聯繫' 欄位，在需要時即時計算
 
 menu = st.sidebar.radio("功能導航", ["👶 新增報名", "📂 資料管理中心", "📅 未來入學預覽", "👩‍🏫 師資人力預估"])
 
@@ -368,46 +352,45 @@ elif menu == "📂 資料管理中心":
             st.download_button("📥 下載", data=csv, file_name='kindergarten_data.csv', mime='text/csv', use_container_width=True)
 
     if not df.empty:
-        display_df = df.copy()
+        base_df = df.copy()
         if search_keyword:
-            display_df = display_df[display_df.astype(str).apply(lambda x: x.str.contains(search_keyword, case=False)).any(axis=1)]
+            base_df = base_df[base_df.astype(str).apply(lambda x: x.str.contains(search_keyword, case=False)).any(axis=1)]
 
-        grouped_df = display_df.groupby('電話')
-        st.caption(f"共找到 {len(grouped_df)} 個家庭 (共 {len(display_df)} 位幼兒)")
+        # 這裡不創建 df['已聯繫']，直接用 '聯繫狀態'
         
-        st.info("💡 任何編輯（勾選、改狀態、改備註）都會被暫存，請滑到最下方按下 **「💾 儲存所有變更」**。")
+        # [關鍵修正] 1. 調整篩選邏輯，確保過濾的資料在原始 df 裡 index 還是對的
+        # 我們使用 index 來操作
+        original_df_indices = df.index.tolist()
+        
+        # 篩選後的 df 
+        filtered_df = base_df.copy()
 
-        # 這裡的邏輯需要改變，因為 df 裡沒有 '已聯繫' 欄位了，必須即時計算
-        
-        # 覆寫 update_value 函數，使用 '聯繫狀態'
-        def update_value_manager(i, c, k):
-            if i not in st.session_state.edited_rows:
-                st.session_state.edited_rows[i] = {}
-            
-            # 針對 Checkbox (聯繫狀態) 的特別處理
-            if c == '聯繫狀態':
-                if st.session_state[k]:
-                    st.session_state.edited_rows[i][c] = "已聯繫"
-                else:
-                    st.session_state.edited_rows[i][c] = "未聯繫"
-            else:
-                st.session_state.edited_rows[i][c] = st.session_state[k]
+        # 創建一個新的聯繫狀態欄位供 checkbox 綁定
+        filtered_df['is_contacted'] = filtered_df['聯繫狀態'].apply(lambda x: True if str(x).strip() == '已聯繫' else False)
+
 
         tab_todo, tab_done, tab_all = st.tabs(["📞 待聯繫名單 (優先)", "✅ 已聯繫名單", "📋 全部資料"])
-        
-        # 定義顯示函數 (加入 key_suffix 解決 Key 重複問題)
-        def render_student_list(target_df, key_suffix):
+
+        # 定義顯示函數 (加入 unique_key 參數解決 Key 重複問題)
+        def render_student_list(target_df, key_suffix, contact_status):
             if target_df.empty:
                 st.info("此區塊目前無資料。")
                 return
 
-            grouped_df_tab = target_df.groupby('電話')
-            
+            # [修正] 篩選後，再次分組
+            if contact_status == "all":
+                grouped_df_tab = target_df.groupby('電話')
+            elif contact_status == "todo":
+                grouped_df_tab = target_df[target_df['聯繫狀態'] == "未聯繫"].groupby('電話')
+            else:
+                grouped_df_tab = target_df[target_df['聯繫狀態'] == "已聯繫"].groupby('電話')
+
+
             for phone_num, group_data in grouped_df_tab:
                 first_row = group_data.iloc[0]
                 parent_name = first_row['家長稱呼']
                 
-                with st.expander(f"👤 {parent_name} | 📞 {phone_num} (共 {len(group_data)} 位幼兒)"):
+                with st.expander(f"👤 {parent_name} | 📞 {phone_num} (共 {len(group_data)} 位幼兒)", key=f"exp_{phone_num}_{key_suffix}"):
                     for idx, row in group_data.iterrows():
                         status_color = "tag-yellow"
                         if "已安排" in str(row['報名狀態']): status_color = "tag-green"
@@ -428,11 +411,17 @@ elif menu == "📂 資料管理中心":
                         </div>
                         """, unsafe_allow_html=True)
                         
-                        # 1. 已聯繫
+                        def update_value_manager(i, c, k):
+                            if i not in st.session_state.edited_rows: st.session_state.edited_rows[i] = {}
+                            
+                            if c == '聯繫狀態':
+                                st.session_state.edited_rows[i][c] = "已聯繫" if st.session_state[k] else "未聯繫"
+                            else:
+                                st.session_state.edited_rows[i][c] = st.session_state[k]
+
                         k_contact = f"contact_{idx}_{key_suffix}"
                         st.checkbox("已聯繫", value=is_contacted_bool, key=k_contact, on_change=update_value_manager, args=(idx, '聯繫狀態', k_contact))
                         
-                        # 2. 報名狀態
                         k_status = f"status_{idx}_{key_suffix}"
                         status_opts = ["排隊中", "已安排", "考慮中"]
                         curr_val = row['報名狀態']
@@ -442,7 +431,6 @@ elif menu == "📂 資料管理中心":
                         curr_status_idx = status_opts.index(curr_val)
                         st.selectbox("報名狀態", status_opts, index=curr_status_idx, key=k_status, on_change=update_value_manager, args=(idx, '報名狀態', k_status))
                         
-                        # 3. 入學年段 (智慧選單)
                         k_grade = f"grade_{idx}_{key_suffix}"
                         current_plan = row['預計入學資訊']
                         try:
@@ -451,48 +439,39 @@ elif menu == "📂 資料管理中心":
                             possible_plans = calculate_admission_roadmap(dob_obj)
                         except: possible_plans = [current_plan, "無法計算/日期錯誤"]
                         if current_plan not in possible_plans: possible_plans.insert(0, current_plan)
-                        
                         st.selectbox("入學年段", possible_plans, index=possible_plans.index(current_plan), key=k_grade, on_change=update_value_manager, args=(idx, '預計入學資訊', k_grade))
                         
-                        # 4. 備註
                         k_note = f"note_{idx}_{key_suffix}"
                         st.text_area("備註", value=row['備註'], height=68, key=k_note, on_change=update_value_manager, args=(idx, '備註', k_note))
 
                         if st.button("🗑️ 刪除此幼兒", key=f"del_btn_{idx}_{key_suffix}"):
+                            # 為了安全刪除，我們操作原始 df
                             df = df.drop(idx)
                             if sync_data_to_gsheets(df):
                                 st.success("✅ 刪除成功！")
                                 st.rerun()
                         st.divider()
-
+            
         with tab_todo:
             st.warning("🔔 這裡顯示 **尚未聯繫** 的家長，請優先處理。")
-            render_student_list(base_df[base_df['聯繫狀態'] == "未聯繫"], "todo")
+            render_student_list(filtered_df, "todo", "todo")
 
         with tab_done:
             st.success("✅ 這裡顯示 **已經聯繫過** 的家長。")
-            render_student_list(base_df[base_df['聯繫狀態'] == "已聯繫"], "done")
+            render_student_list(filtered_df, "done", "done")
 
         with tab_all:
-            render_student_list(base_df, "all")
+            render_student_list(filtered_df, "all", "all")
         
         st.write("")
         if st.button("💾 儲存所有變更", type="primary", use_container_width=True):
             has_changes = False
             for idx, changes in st.session_state.edited_rows.items():
                 for col, val in changes.items():
-                    # [關鍵修正] 檢查是否有 '已聯繫' 的值，並手動更新到 df['聯繫狀態']
-                    if col == '聯繫狀態':
-                        df.at[idx, '聯繫狀態'] = val
-                    else:
-                        df.at[idx, col] = val
+                    df.at[idx, col] = val
                     has_changes = True
             
             if has_changes:
-                # [關鍵修正] 在同步之前，我們需要將 df['已聯繫'] 刪掉，避免它被存到 Google Sheet 裡
-                if '已聯繫' in df.columns:
-                    df = df.drop(columns=['已聯繫'])
-
                 if sync_data_to_gsheets(df):
                     st.success("✅ 所有變更已儲存！")
                     st.session_state.edited_rows = {}
@@ -504,7 +483,7 @@ elif menu == "📂 資料管理中心":
     else:
         st.info("目前無資料。")
 
-# --- 頁面 3: 未來入學預覽 (已連動) ---
+# --- 頁面 3: 未來入學預覽 ---
 elif menu == "📅 未來入學預覽":
     st.markdown("### 📅 未來入學名單預覽")
     c_year, c_info = st.columns([1, 3])
@@ -528,11 +507,14 @@ elif menu == "📅 未來入學預覽":
                 target_year_str = f"{search_year} 學年"
                 
                 grade = None
+                
+                # 1. 先看手動欄位有沒有包含 "115 學年"
                 if target_year_str in manual_plan:
                     parts = manual_plan.split(" - ")
                     if len(parts) > 1:
                         grade = parts[1].strip()
                 
+                # 2. 如果手動欄位沒寫，才用生日算 (Fallback)
                 if not grade:
                     grade = get_grade_for_year(dob_obj, search_year)
                 
@@ -549,7 +531,7 @@ elif menu == "📅 未來入學預覽":
                     
                     roster[grade].append({
                         "index": idx,
-                        "已聯繫": is_contacted, # 使用布林值方便 checkbox 顯示
+                        "已聯繫": is_contacted,
                         "報名狀態": row['報名狀態'],
                         "家長": row['家長稱呼'],
                         "電話": row['電話'],
@@ -575,7 +557,7 @@ elif menu == "📅 未來入學預覽":
         for g in ["托嬰中心", "幼幼班", "小班", "中班", "大班"]:
             students = roster[g]
             count = len(students)
-            with st.expander(f"📍 {g} (共 {count} 人)", expanded=(count > 0)):
+            with st.expander(f"{g} (共 {count} 人)", expanded=(count > 0)):
                 if count > 0:
                     class_df = pd.DataFrame(students)
                     edited = st.data_editor(
@@ -592,15 +574,13 @@ elif menu == "📅 未來入學預覽":
                         key=f"editor_{search_year}_{g}"
                     )
                     if st.button(f"💾 儲存 {g} 變更", key=f"btn_{search_year}_{g}"):
-                        # 這裡的儲存只修改 "已聯繫"
                         full_df = load_registered_data()
                         has_change = False
                         for i, row in enumerate(students):
                             orig_idx = row['index']
                             new_val = edited.iloc[i]['已聯繫']
                             
-                            # 由於 load_registered_data 已經讀了最新資料，我們需要更新它
-                            # 注意：這裡不能直接操作 df，要操作 full_df
+                            # 判斷是否有改變
                             if str(full_df.at[orig_idx, '聯繫狀態']) != ("已聯繫" if new_val else "未聯繫"):
                                 full_df.at[orig_idx, '聯繫狀態'] = "已聯繫" if new_val else "未聯繫"
                                 has_change = True
@@ -652,7 +632,6 @@ elif menu == "👩‍🏫 師資人力預估":
                     plan_str = str(row['預計入學資訊'])
                     status = str(row['報名狀態'])
                     try:
-                        # 邏輯更新：優先讀取手動設定的入學資訊
                         target_grade = None
                         target_year_str = f"{year} 學年"
                         
