@@ -1,6 +1,3 @@
-
-
-```python
 import streamlit as st
 import pandas as pd
 from datetime import date, datetime
@@ -8,7 +5,7 @@ import math
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import time
-import uuid # [新增] 引入 uuid 庫來生成唯一的 key
+import uuid # 確保 key 唯一
 
 try:
     from streamlit_keyup import st_keyup
@@ -134,7 +131,6 @@ def sync_data_to_gsheets(new_df):
     try:
         sheet = connect_to_gsheets()
         save_df = new_df.copy()
-        
         if '已聯繫' in save_df.columns:
             save_df['聯繫狀態'] = save_df['已聯繫'].apply(lambda x: '已聯繫' if x is True else '未聯繫')
             save_df = save_df.drop(columns=['已聯繫'])
@@ -301,7 +297,6 @@ if st.session_state['msg_warning']:
 
 df = load_registered_data()
 
-# 頁面選單
 menu = st.sidebar.radio("功能導航", ["👶 新增報名", "📂 資料管理中心", "📅 未來入學預覽", "👩‍🏫 師資人力預估"])
 
 # --- 頁面 1: 新增報名 ---
@@ -375,15 +370,11 @@ elif menu == "📂 資料管理中心":
 
             # [修正] 篩選後，再次分組
             if contact_status == "all":
-                # 這裡的篩選邏輯需要對齊外面 Tab 的篩選邏輯，但為了安全性，我們只用原本的 base_df 過濾
                 grouped_df_tab = target_df.groupby('電話')
             elif contact_status == "todo":
-                # [修正] 使用 is_contacted 欄位來過濾，避免錯誤
-                target_df['is_contacted'] = target_df['聯繫狀態'].apply(lambda x: True if str(x).strip() == '已聯繫' else False)
-                grouped_df_tab = target_df[target_df['is_contacted'] == False].groupby('電話')
+                grouped_df_tab = target_df[target_df['聯繫狀態'] == "未聯繫"].groupby('電話')
             else:
-                target_df['is_contacted'] = target_df['聯繫狀態'].apply(lambda x: True if str(x).strip() == '已聯繫' else False)
-                grouped_df_tab = target_df[target_df['is_contacted'] == True].groupby('電話')
+                grouped_df_tab = target_df[target_df['聯繫狀態'] == "已聯繫"].groupby('電話')
 
 
             for phone_num, group_data in grouped_df_tab:
@@ -413,16 +404,15 @@ elif menu == "📂 資料管理中心":
                         </div>
                         """, unsafe_allow_html=True)
                         
-                        # [修正] 這裡使用一個更安全的 update 邏輯，避免直接讀取不存在的 session_state
                         def update_value_manager(i, c, k):
                             if i not in st.session_state.edited_rows: st.session_state.edited_rows[i] = {}
+                            
                             if c == '聯繫狀態':
                                 st.session_state.edited_rows[i][c] = "已聯繫" if st.session_state[k] else "未聯繫"
                             else:
                                 st.session_state.edited_rows[i][c] = st.session_state[k]
 
                         k_contact = f"contact_{idx}_{key_suffix}"
-                        # 只有在 Session State 裡沒有這個 key 時，才用 row 裡的值當預設
                         if k_contact not in st.session_state:
                             st.session_state[k_contact] = is_contacted_bool
                         st.checkbox("已聯繫", value=st.session_state[k_contact], key=k_contact, on_change=update_value_manager, args=(idx, '聯繫狀態', k_contact))
@@ -450,7 +440,7 @@ elif menu == "📂 資料管理中心":
                         st.text_area("備註", value=row['備註'], height=68, key=k_note, on_change=update_value_manager, args=(idx, '備註', k_note))
 
                         if st.button("🗑️ 刪除此幼兒", key=f"del_btn_{idx}_{key_suffix}"):
-                            if st.session_state['msg_error'] is None: # 避免彈出視窗被錯誤訊息蓋掉
+                            if st.session_state['msg_error'] is None: 
                                 if sync_data_to_gsheets(df.drop(idx)):
                                     st.success("✅ 刪除成功！")
                                     st.rerun()
@@ -458,21 +448,20 @@ elif menu == "📂 資料管理中心":
 
         with tab_todo:
             st.warning("🔔 這裡顯示 **尚未聯繫** 的家長，請優先處理。")
-            render_student_list(filtered_df, "todo", "todo")
+            render_student_list(base_df, "todo", "todo")
 
         with tab_done:
             st.success("✅ 這裡顯示 **已經聯繫過** 的家長。")
-            render_student_list(filtered_df, "done", "done")
+            render_student_list(base_df, "done", "done")
 
         with tab_all:
-            render_student_list(filtered_df, "all", "all")
+            render_student_list(base_df, "all", "all")
         
         st.write("")
         if st.button("💾 儲存所有變更", type="primary", use_container_width=True):
             has_changes = False
             full_df = df.copy()
             
-            # 應用所有暫存的變更
             for idx, changes in st.session_state.edited_rows.items():
                 for col, val in changes.items():
                     full_df.at[idx, col] = val
@@ -639,3 +628,46 @@ elif menu == "👩‍🏫 師資人力預估":
                         target_year_str = f"{year} 學年"
                         
                         if target_year_str in plan_str:
+                            parts = plan_str.split(" - ")
+                            if len(parts) > 1:
+                                target_grade = parts[1].strip()
+                        
+                        if not target_grade:
+                            dob_str = str(row['幼兒生日'])
+                            dob_parts = dob_str.split('/')
+                            dob_obj = date(int(dob_parts[0])+1911, int(dob_parts[1]), int(dob_parts[2]))
+                            target_grade = get_grade_for_year(dob_obj, year)
+
+                        if target_grade and target_grade in confirmed_counts:
+                            if "已安排" in status or "已確認" in status: confirmed_counts[target_grade] += 1
+                            else: waitlist_counts[target_grade] += 1
+                    except: pass
+
+            data = []
+            total_teachers_min = 0
+            total_teachers_max = 0
+            class_rules = [("托嬰中心", ratio_daycare), ("幼幼班", ratio_toddler), ("小班", ratio_normal), ("中班", ratio_normal), ("大班", ratio_normal)]
+            
+            for grade, ratio in class_rules:
+                base = confirmed_counts[grade]
+                wait = waitlist_counts[grade]
+                total_possible = base + wait
+                tea_min = math.ceil(base / ratio) if base > 0 else 0
+                tea_max = math.ceil(total_possible / ratio) if total_possible > 0 else 0
+                total_teachers_min += tea_min
+                total_teachers_max += tea_max
+                
+                data.append({
+                    "班級": grade,
+                    "師生比": f"1:{ratio}",
+                    "已安排人數": base,
+                    "排隊中": wait,
+                    "預估總人數": total_possible,
+                    "需老師": f"{tea_min} ~ {tea_max} 位"
+                })
+            
+            st.dataframe(pd.DataFrame(data), use_container_width=True)
+            st.caption(f"💡 結論：老師需求介於 **{total_teachers_min}** ~ **{total_teachers_max}** 位")
+            st.divider()
+    else:
+        st.info("請選擇學年。")
