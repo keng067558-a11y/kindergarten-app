@@ -342,7 +342,7 @@ if menu == "👶 新增報名":
     else:
         st.caption("請在右側輸入幼兒資料並加入暫存。")
 
-# --- 頁面 2: 資料管理中心 (含已聯繫分頁) ---
+# --- 頁面 2: 資料管理中心 ---
 elif menu == "📂 資料管理中心":
     st.markdown("### 📂 資料管理中心")
     
@@ -355,16 +355,14 @@ elif menu == "📂 資料管理中心":
             st.download_button("📥 下載", data=csv, file_name='kindergarten_data.csv', mime='text/csv', use_container_width=True)
 
     if not df.empty:
-        # 搜尋邏輯
         base_df = df.copy()
         if search_keyword:
             base_df = base_df[base_df.astype(str).apply(lambda x: x.str.contains(search_keyword, case=False)).any(axis=1)]
 
-        # [修改] 加入 3 個分頁
         tab_todo, tab_done, tab_all = st.tabs(["📞 待聯繫名單 (優先)", "✅ 已聯繫名單", "📋 全部資料"])
 
-        # 定義顯示函數 (複用邏輯)
-        def render_student_list(target_df):
+        # 定義顯示函數 (加入 unique_key 參數解決 Key 重複問題)
+        def render_student_list(target_df, key_suffix):
             if target_df.empty:
                 st.info("此區塊目前無資料。")
                 return
@@ -396,15 +394,15 @@ elif menu == "📂 資料管理中心":
                         </div>
                         """, unsafe_allow_html=True)
                         
-                        # 編輯表單
                         def update_value(i, c, k):
                             if i not in st.session_state.edited_rows: st.session_state.edited_rows[i] = {}
                             st.session_state.edited_rows[i][c] = st.session_state[k]
 
-                        k_contact = f"contact_{idx}"
+                        # [修正] 所有的 key 都加上 key_suffix
+                        k_contact = f"contact_{idx}_{key_suffix}"
                         st.checkbox("已聯繫", value=row['已聯繫'], key=k_contact, on_change=update_value, args=(idx, '已聯繫', k_contact))
                         
-                        k_status = f"status_{idx}"
+                        k_status = f"status_{idx}_{key_suffix}"
                         status_opts = ["排隊中", "已安排", "考慮中"]
                         curr_val = row['報名狀態']
                         if curr_val == "排隊候補": curr_val = "排隊中"
@@ -412,7 +410,7 @@ elif menu == "📂 資料管理中心":
                         if curr_val not in status_opts: status_opts.insert(0, curr_val)
                         st.selectbox("報名狀態", status_opts, index=status_opts.index(curr_val), key=k_status, on_change=update_value, args=(idx, '報名狀態', k_status))
                         
-                        k_grade = f"grade_{idx}"
+                        k_grade = f"grade_{idx}_{key_suffix}"
                         current_plan = row['預計入學資訊']
                         try:
                             dob_parts = str(row['幼兒生日']).split('/')
@@ -422,30 +420,26 @@ elif menu == "📂 資料管理中心":
                         if current_plan not in possible_plans: possible_plans.insert(0, current_plan)
                         st.selectbox("入學年段", possible_plans, index=possible_plans.index(current_plan), key=k_grade, on_change=update_value, args=(idx, '預計入學資訊', k_grade))
                         
-                        k_note = f"note_{idx}"
+                        k_note = f"note_{idx}_{key_suffix}"
                         st.text_area("備註", value=row['備註'], height=68, key=k_note, on_change=update_value, args=(idx, '備註', k_note))
 
-                        if st.button("🗑️ 刪除此幼兒", key=f"del_btn_{idx}"):
-                            # 為了安全刪除，我們操作原始 df
+                        if st.button("🗑️ 刪除此幼兒", key=f"del_btn_{idx}_{key_suffix}"):
                             df = df.drop(idx)
                             if sync_data_to_gsheets(df):
                                 st.success("✅ 刪除成功！")
                                 st.rerun()
                         st.divider()
 
-        # 分頁 1: 待聯繫 (Contacted = False)
         with tab_todo:
             st.warning("🔔 這裡顯示 **尚未聯繫** 的家長，請優先處理。")
-            render_student_list(base_df[base_df['已聯繫'] == False])
+            render_student_list(base_df[base_df['已聯繫'] == False], "todo")
 
-        # 分頁 2: 已聯繫 (Contacted = True)
         with tab_done:
             st.success("✅ 這裡顯示 **已經聯繫過** 的家長。")
-            render_student_list(base_df[base_df['已聯繫'] == True])
+            render_student_list(base_df[base_df['已聯繫'] == True], "done")
 
-        # 分頁 3: 全部
         with tab_all:
-            render_student_list(base_df)
+            render_student_list(base_df, "all")
         
         st.write("")
         if st.button("💾 儲存所有變更", type="primary", use_container_width=True):
