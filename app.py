@@ -29,24 +29,22 @@ st.markdown("""
         border: 1px solid #eee;
     }
     
-    /* 家長卡片容器 */
     .parent-card {
         background-color: #ffffff;
         padding: 15px;
         border-radius: 10px;
         box-shadow: 0 3px 6px rgba(0,0,0,0.08);
         margin-bottom: 15px;
-        border-top: 5px solid #2196F3; /* 藍色頂條 */
+        border-top: 5px solid #2196F3;
         transition: all 0.2s ease;
     }
     
-    /* 孩子資訊區塊 */
     .child-info-block {
         background-color: #f8f9fa;
         padding: 10px;
         border-radius: 8px;
         margin-top: 10px;
-        border-left: 4px solid #4CAF50; /* 綠色側邊條 */
+        border-left: 4px solid #4CAF50;
     }
     
     .card-tag {
@@ -57,7 +55,15 @@ st.markdown("""
     .tag-yellow { background-color: #f1c40f; color: #333; }
     .tag-blue { background-color: #17a2b8; }
     
-    div.stButton > button { border-radius: 8px; font-weight: bold; }
+    /* 浮動儲存按鈕樣式 (模擬) */
+    .save-btn-container {
+        position: sticky;
+        top: 0;
+        z-index: 999;
+        background: white;
+        padding: 10px 0;
+        border-bottom: 1px solid #eee;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -279,6 +285,7 @@ if 'msg_success' not in st.session_state: st.session_state['msg_success'] = None
 if 'msg_error' not in st.session_state: st.session_state['msg_error'] = None
 if 'msg_warning' not in st.session_state: st.session_state['msg_warning'] = None
 if 'temp_children' not in st.session_state: st.session_state.temp_children = []
+if 'edited_rows' not in st.session_state: st.session_state.edited_rows = {}
 
 if st.session_state['msg_success']:
     st.balloons()
@@ -343,7 +350,7 @@ if menu == "👶 新增報名":
     else:
         st.caption("請在右側輸入幼兒資料並加入暫存。")
 
-# --- 頁面 2: 資料管理中心 (家庭合併版) ---
+# --- 頁面 2: 資料管理中心 (批量儲存版) ---
 elif menu == "📂 資料管理中心":
     st.markdown("### 📂 資料管理中心")
     
@@ -360,21 +367,37 @@ elif menu == "📂 資料管理中心":
         if search_keyword:
             display_df = display_df[display_df.astype(str).apply(lambda x: x.str.contains(search_keyword, case=False)).any(axis=1)]
 
-        # [修改] 依照電話號碼分組
         grouped_df = display_df.groupby('電話')
-        
         st.caption(f"共找到 {len(grouped_df)} 個家庭 (共 {len(display_df)} 位幼兒)")
         
-        # 遍歷每個家庭 (電話)
+        # [修改] 全域儲存按鈕
+        st.warning("⚠️ 修改完資料後，請務必點擊下方的 **「💾 儲存所有變更」** 按鈕，資料才會寫入資料庫！")
+        
+        if st.button("💾 儲存所有變更", type="primary", use_container_width=True):
+            # 從 session_state 中讀取所有變更並更新 df
+            has_changes = False
+            for idx, changes in st.session_state.edited_rows.items():
+                for col, val in changes.items():
+                    df.at[idx, col] = val
+                    has_changes = True
+            
+            if has_changes:
+                if sync_data_to_gsheets(df):
+                    st.success("✅ 所有變更已儲存！")
+                    st.session_state.edited_rows = {} # 清空暫存變更
+                    time.sleep(1)
+                    st.rerun()
+            else:
+                st.info("沒有偵測到任何變更。")
+
+        st.divider()
+
+        # 遍歷顯示資料
         for phone_num, group_data in grouped_df:
-            # 取得該家庭的第一筆資料當作 Header 資訊
             first_row = group_data.iloc[0]
             parent_name = first_row['家長稱呼']
             
-            # 使用 Expander 包裹整個家庭
             with st.expander(f"👤 {parent_name} | 📞 {phone_num} (共 {len(group_data)} 位幼兒)"):
-                
-                # 遍歷該家庭底下的每一位幼兒
                 for idx, row in group_data.iterrows():
                     status_color = "tag-yellow"
                     if "已確認" in str(row['報名狀態']): status_color = "tag-green"
@@ -382,7 +405,7 @@ elif menu == "📂 資料管理中心":
                     
                     child_name_display = row['幼兒姓名'] if row['幼兒姓名'] else "(未填姓名)"
                     
-                    # 幼兒資訊顯示區塊 (HTML)
+                    # 顯示資訊 (HTML)
                     st.markdown(f"""
                     <div class="child-info-block">
                         <div style="display:flex; justify-content:space-between; align-items:center;">
@@ -395,45 +418,51 @@ elif menu == "📂 資料管理中心":
                     </div>
                     """, unsafe_allow_html=True)
                     
-                    # 幼兒編輯表單
-                    with st.form(key=f"edit_form_{idx}"):
-                        c1, c2 = st.columns([1, 1])
-                        new_contacted = c1.checkbox("已聯繫", value=row['已聯繫'])
-                        new_status = c2.selectbox("報名狀態", ["排隊候補", "已確認/已繳費", "考慮中/參觀"], index=["排隊候補", "已確認/已繳費", "考慮中/參觀"].index(row['報名狀態']) if row['報名狀態'] in ["排隊候補", "已確認/已繳費", "考慮中/參觀"] else 0)
-                        
-                        # 智慧入學年段選單
-                        current_plan = row['預計入學資訊']
-                        try:
-                            dob_parts = str(row['幼兒生日']).split('/')
-                            dob_obj = date(int(dob_parts[0])+1911, int(dob_parts[1]), int(dob_parts[2]))
-                            possible_plans = calculate_admission_roadmap(dob_obj)
-                        except:
-                            possible_plans = [current_plan, "無法計算/日期錯誤"]
-                        
-                        if current_plan not in possible_plans:
-                            possible_plans.insert(0, current_plan)
-                            
-                        new_grade = st.selectbox("入學年段", possible_plans, index=possible_plans.index(current_plan))
-                        new_note = st.text_area("備註", value=row['備註'], height=68)
-                        
-                        col_save, col_del = st.columns([1, 1])
-                        update_btn = col_save.form_submit_button("💾 儲存修改", type="primary", use_container_width=True)
-                        
-                        if update_btn:
-                            df.at[idx, '已聯繫'] = new_contacted
-                            df.at[idx, '報名狀態'] = new_status
-                            df.at[idx, '預計入學資訊'] = new_grade
-                            df.at[idx, '備註'] = new_note
-                            if sync_data_to_gsheets(df):
-                                st.success("✅ 更新成功！")
-                                st.rerun()
+                    # [修改] 編輯表單 (不含按鈕，直接綁定到 session state)
+                    c1, c2 = st.columns([1, 1])
+                    
+                    # 使用 key 來區分每個元件，並透過 on_change 紀錄變更
+                    # 這裡比較特別：我們不直接寫入 df，而是寫入 session_state 的 edited_rows
+                    
+                    def update_value(i, c, k):
+                        if i not in st.session_state.edited_rows:
+                            st.session_state.edited_rows[i] = {}
+                        st.session_state.edited_rows[i][c] = st.session_state[k]
 
+                    # 1. 已聯繫
+                    k_contact = f"contact_{idx}"
+                    st.checkbox("已聯繫", value=row['已聯繫'], key=k_contact, on_change=update_value, args=(idx, '已聯繫', k_contact))
+                    
+                    # 2. 報名狀態
+                    k_status = f"status_{idx}"
+                    status_opts = ["排隊候補", "已確認/已繳費", "考慮中/參觀"]
+                    curr_status_idx = status_opts.index(row['報名狀態']) if row['報名狀態'] in status_opts else 0
+                    st.selectbox("報名狀態", status_opts, index=curr_status_idx, key=k_status, on_change=update_value, args=(idx, '報名狀態', k_status))
+                    
+                    # 3. 入學年段 (邏輯同前，自動計算)
+                    k_grade = f"grade_{idx}"
+                    current_plan = row['預計入學資訊']
+                    try:
+                        dob_parts = str(row['幼兒生日']).split('/')
+                        dob_obj = date(int(dob_parts[0])+1911, int(dob_parts[1]), int(dob_parts[2]))
+                        possible_plans = calculate_admission_roadmap(dob_obj)
+                    except:
+                        possible_plans = [current_plan, "無法計算/日期錯誤"]
+                    if current_plan not in possible_plans: possible_plans.insert(0, current_plan)
+                    
+                    st.selectbox("入學年段", possible_plans, index=possible_plans.index(current_plan), key=k_grade, on_change=update_value, args=(idx, '預計入學資訊', k_grade))
+                    
+                    # 4. 備註
+                    k_note = f"note_{idx}"
+                    st.text_area("備註", value=row['備註'], height=68, key=k_note, on_change=update_value, args=(idx, '備註', k_note))
+
+                    # 刪除按鈕 (獨立運作，因為刪除是重大操作，建議還是獨立按鈕)
                     if st.button("🗑️ 刪除此幼兒", key=f"del_btn_{idx}"):
                         df = df.drop(idx)
                         if sync_data_to_gsheets(df):
                             st.success("✅ 刪除成功！")
                             st.rerun()
-                    st.divider() # 分隔線
+                    st.divider()
     else:
         st.info("目前無資料。")
 
