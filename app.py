@@ -13,31 +13,62 @@ except ImportError:
         return st.text_input(label, placeholder=placeholder, key=key)
 
 # ==========================================
-# 🎨 自定義 CSS
+# 🎨 自定義 CSS (優化卡片樣式 - 學生資料強化版)
 # ==========================================
 st.set_page_config(page_title="新生管理系統", layout="wide", page_icon="🏫")
 
 st.markdown("""
 <style>
     .stApp { font-family: "Microsoft JhengHei", sans-serif; }
+    
+    /* Expander 標題優化 */
     .streamlit-expanderHeader {
-        background-color: #f0f2f6;
+        background-color: #f8f9fa;
         border-radius: 8px;
         font-size: 16px;
-        font-weight: bold;
         color: #333;
+        border: 1px solid #eee;
     }
-    .status-badge {
-        padding: 4px 8px;
-        border-radius: 12px;
-        color: white;
-        font-size: 0.8em;
-        margin-left: 10px;
+    
+    /* 學生卡片容器 */
+    .student-card {
+        background-color: #ffffff;
+        padding: 15px;
+        border-radius: 10px;
+        box-shadow: 0 3px 6px rgba(0,0,0,0.08);
+        margin-bottom: 12px;
+        border-left: 6px solid #4CAF50; /* 預設綠色 */
+        transition: all 0.2s ease;
     }
-    div.stButton > button {
-        border-radius: 8px;
-        font-weight: bold;
+    .student-card:hover {
+        box-shadow: 0 6px 12px rgba(0,0,0,0.12);
+        transform: translateY(-2px);
     }
+    
+    /* 狀態標籤 */
+    .card-tag {
+        display: inline-block; padding: 2px 8px; border-radius: 10px; 
+        font-size: 11px; font-weight: bold; color: white; float: right;
+    }
+    .tag-green { background-color: #28a745; } /* 已確認 */
+    .tag-yellow { background-color: #f1c40f; color: #333; } /* 排隊 */
+    .tag-blue { background-color: #17a2b8; } /* 考慮中 */
+    
+    /* 區塊樣式 */
+    .section-parent { border-bottom: 1px solid #eee; padding-bottom: 8px; margin-bottom: 8px; }
+    .section-child { margin-bottom: 8px; }
+    .section-school { 
+        background-color: #e3f2fd; color: #1565c0; 
+        padding: 6px 10px; border-radius: 6px; 
+        font-weight: bold; font-size: 0.95em; 
+        display: inline-block; margin-bottom: 8px;
+    }
+    .section-note {
+        font-size: 0.85em; color: #666; background: #f9f9f9; 
+        padding: 8px; border-radius: 4px; border-left: 3px solid #ddd;
+    }
+    
+    div.stButton > button { border-radius: 8px; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -111,6 +142,7 @@ def sync_data_to_gsheets(new_df):
         if '已聯繫' in save_df.columns:
             save_df['聯繫狀態'] = save_df['已聯繫'].apply(lambda x: '已聯繫' if x is True else '未聯繫')
             save_df = save_df.drop(columns=['已聯繫'])
+        
         final_cols = ['報名狀態', '聯繫狀態', '登記日期', '幼兒姓名', '家長稱呼', '電話', '幼兒生日', '預計入學資訊', '推薦人', '備註']
         for col in final_cols:
             if col not in save_df.columns: save_df[col] = ""
@@ -157,19 +189,17 @@ def get_grade_for_year(birth_date, target_roc_year):
     if age == 5: return "大班"
     return "畢業/超齡"
 
-# [修改] 計算入學路徑，回傳該幼兒未來 5 年的年段清單
-def calculate_admission_roadmap(dob, years_to_predict=6):
+def calculate_admission_roadmap(dob):
     today = date.today()
     current_roc = today.year - 1911
     if today.month < 8: current_roc -= 1
     offset = 1 if (dob.month > 9) or (dob.month == 9 and dob.day >= 2) else 0
     roadmap = []
     
-    # 預設選項：年齡不符
     default_option = "年齡不符/待確認"
     has_valid_option = False
     
-    for i in range(years_to_predict): 
+    for i in range(6): 
         target = current_roc + i
         age = target - (dob.year - 1911) - offset
         if age == 2: grade = "幼幼班"
@@ -186,7 +216,6 @@ def calculate_admission_roadmap(dob, years_to_predict=6):
             
     if not has_valid_option:
         roadmap.append(default_option)
-        
     return roadmap
 
 def add_child_callback():
@@ -209,6 +238,10 @@ def add_child_callback():
     })
     st.session_state.input_c_name = "" 
     st.session_state.input_note = ""
+
+def remove_child_callback(index):
+    if 0 <= index < len(st.session_state.temp_children):
+        st.session_state.temp_children.pop(index)
 
 def submit_all_callback():
     p_name = st.session_state.input_p_name
@@ -301,19 +334,30 @@ if menu == "👶 新增報名":
     st.markdown("---")
     if st.session_state.temp_children:
         st.markdown(f"#### 🛒 待送出名單 ({len(st.session_state.temp_children)} 位)")
+        
         for i, child in enumerate(st.session_state.temp_children):
-            st.markdown(f"""
-            <div class="student-card" style="border-left: 5px solid #2196F3;">
-                <div class="card-title">👶 {child['幼兒姓名']}</div>
-                <div class="card-subtitle">🎂 生日：{child['幼兒生日']} | 📅 {child['預計入學資訊']}</div>
-                <div style="color: #666; font-size: 12px;">📝 {child['備註'] if child['備註'] else "無備註"}</div>
-            </div>
-            """, unsafe_allow_html=True)
+            c_info, c_del = st.columns([5, 1])
+            with c_info:
+                st.markdown(f"""
+                <div class="student-card" style="border-left: 5px solid #2196F3;">
+                    <div class="section-child">
+                        <span style="font-size:1.2em; font-weight:bold; color:#333;">👶 {child['幼兒姓名']}</span>
+                        <span style="color:#666; font-size:0.9em; margin-left:10px;">(生日: {child['幼兒生日']})</span>
+                    </div>
+                    <div class="section-school">📅 {child['預計入學資訊']}</div>
+                    <div class="section-note">📝 {child['備註'] if child['備註'] else "無備註"}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            with c_del:
+                st.write("") 
+                st.button(f"🗑️", key=f"del_temp_{i}", on_click=remove_child_callback, args=(i,), type="primary")
+            st.write("") 
+
         st.button("✅ 確認送出所有資料", type="primary", on_click=submit_all_callback)
     else:
         st.caption("請在右側輸入幼兒資料並加入暫存。")
 
-# --- 頁面 2: 資料管理中心 (編輯功能升級) ---
+# --- 頁面 2: 資料管理中心 (學生資料強調版) ---
 elif menu == "📂 資料管理中心":
     st.markdown("### 📂 資料管理中心")
     
@@ -333,19 +377,44 @@ elif menu == "📂 資料管理中心":
         st.caption(f"共找到 {len(display_df)} 筆資料")
         
         for idx, row in display_df.iterrows():
-            icon = "🟡"
-            if "已確認" in str(row['報名狀態']): icon = "🟢"
-            elif "考慮" in str(row['報名狀態']): icon = "🔵"
+            status_color = "tag-yellow"
+            if "已確認" in str(row['報名狀態']): status_color = "tag-green"
+            elif "考慮" in str(row['報名狀態']): status_color = "tag-blue"
             
-            card_label = f"{icon} {row['家長稱呼']} | 👶 {row['幼兒姓名']} | 📞 {row['電話']}"
+            # [修改] 標題區塊：強調學生姓名與年段
+            child_name_display = row['幼兒姓名'] if row['幼兒姓名'] else "(未填姓名)"
+            card_label = f"👶 {child_name_display} ({row['預計入學資訊']}) | 👤 {row['家長稱呼']}"
             
             with st.expander(card_label):
+                # 卡片內部 HTML 結構 (只顯示不編輯的部分，美化顯示)
+                st.markdown(f"""
+                <div class="student-card">
+                    <div class="section-parent">
+                        <span style="font-weight:bold; color:#2c3e50; font-size:1.1em;">👤 {row['家長稱呼']}</span>
+                        <span style="margin-left:10px; color:#555;">📞 {row['電話']}</span>
+                        <span class="card-tag {status_color}">{row['報名狀態']}</span>
+                    </div>
+                    
+                    <div class="section-child">
+                        <span style="font-size:1.3em; color:#e67e22; font-weight:bold;">👶 {child_name_display}</span>
+                        <span style="margin-left:10px; color:#888;">🎂 生日：{row['幼兒生日']}</span>
+                    </div>
+                    
+                    <div class="section-school">
+                        🏫 預計：{row['預計入學資訊']}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                st.markdown("---")
+                st.write("**✏️ 編輯資料：**")
+
                 with st.form(key=f"edit_form_{idx}"):
-                    c1, c2, c3 = st.columns([1, 1, 2])
+                    c1, c2 = st.columns([1, 1])
                     new_contacted = c1.checkbox("已聯繫", value=row['已聯繫'])
                     new_status = c2.selectbox("報名狀態", ["排隊候補", "已確認/已繳費", "考慮中/參觀"], index=["排隊候補", "已確認/已繳費", "考慮中/參觀"].index(row['報名狀態']) if row['報名狀態'] in ["排隊候補", "已確認/已繳費", "考慮中/參觀"] else 0)
                     
-                    # [修改] 智慧下拉選單：自動計算可讀年段
+                    # 智慧入學年段選單
                     current_plan = row['預計入學資訊']
                     try:
                         dob_parts = str(row['幼兒生日']).split('/')
@@ -354,12 +423,10 @@ elif menu == "📂 資料管理中心":
                     except:
                         possible_plans = [current_plan, "無法計算/日期錯誤"]
                     
-                    # 確保目前的值在選項中
                     if current_plan not in possible_plans:
                         possible_plans.insert(0, current_plan)
                         
-                    new_grade = c3.selectbox("預計入學資訊 (依生日自動計算)", possible_plans, index=possible_plans.index(current_plan))
-                    
+                    new_grade = st.selectbox("預計入學資訊 (依生日自動計算)", possible_plans, index=possible_plans.index(current_plan))
                     new_note = st.text_area("備註", value=row['備註'])
                     
                     col_save, col_del = st.columns([1, 1])
