@@ -42,25 +42,19 @@ def connect_to_gsheets():
 def load_registered_data():
     try:
         sheet = connect_to_gsheets()
-        # [修正] 強制將所有資料先讀成字串，避免電話號碼被當成數字去頭
         data = sheet.get_all_values()
         if not data: return pd.DataFrame()
         
-        # 第一列是標題，下面是資料
         headers = data[0]
         rows = data[1:]
         df = pd.DataFrame(rows, columns=headers)
         
-        # [修正] 電話號碼補 0 機制
         if '電話' in df.columns:
-            # 去除空白
             df['電話'] = df['電話'].astype(str).str.strip()
-            # 如果是 9 碼且開頭是 9，自動補 0 (針對台灣手機)
             df['電話'] = df['電話'].apply(lambda x: '0' + x if len(x) == 9 and x.startswith('9') else x)
             
         return df
     except Exception as e:
-        # st.error(f"讀取錯誤: {e}") 
         return pd.DataFrame()
 
 def load_current_students():
@@ -74,20 +68,16 @@ def sync_data_to_gsheets(new_df):
         sheet = connect_to_gsheets()
         save_df = new_df.copy()
         
-        # 處理勾選框
         if '已聯繫' in save_df.columns:
             save_df['聯繫狀態'] = save_df['已聯繫'].apply(lambda x: '已聯繫' if x is True else '未聯繫')
             save_df = save_df.drop(columns=['已聯繫'])
         
-        # [調整] 確保欄位順序與完整性 (這裡決定了 Google Sheet 存檔的順序)
         final_cols = ['報名狀態', '聯繫狀態', '登記日期', '幼兒姓名', '家長稱呼', '電話', '幼兒生日', '預計入學資訊', '推薦人', '備註']
         
         for col in final_cols:
             if col not in save_df.columns: save_df[col] = ""
             
         save_df = save_df[final_cols]
-        
-        # 轉成字串防止存檔時格式跑掉
         save_df = save_df.astype(str)
         
         sheet.clear()
@@ -162,11 +152,10 @@ if menu == "👶 新生報名管理":
     if not df.empty and '聯繫狀態' not in df.columns: df['聯繫狀態'] = '未聯繫'
     if not df.empty and '報名狀態' not in df.columns: df['報名狀態'] = '排隊候補'
     
-    # [修正] 確保已聯繫欄位是布林值 (Boolean)，解決報錯關鍵
     if not df.empty:
         df['已聯繫'] = df['聯繫狀態'].apply(lambda x: True if str(x).strip() == '已聯繫' else False)
 
-    tab1, tab2 = st.tabs(["➕ 新增報名", "📊 戰情管理儀表板"])
+    tab1, tab2 = st.tabs(["➕ 新增報名", "📊 招生狀況"])
 
     with tab1:
         col_main, col_roadmap = st.columns([1, 1])
@@ -207,7 +196,7 @@ if menu == "👶 新生報名管理":
                     '登記日期': to_roc_str(date.today()),
                     '幼兒姓名': final_child_name,
                     '家長稱呼': f"{p_name} {p_title}",
-                    '電話': str(phone), # 強制轉字串
+                    '電話': str(phone), 
                     '幼兒生日': to_roc_str(dob),
                     '預計入學資訊': selected_plan,
                     '推薦人': referrer,
@@ -222,7 +211,8 @@ if menu == "👶 新生報名管理":
                 st.error("❌ 請確認「家長姓氏」與「電話」已填寫")
 
     with tab2:
-        st.subheader("📊 招生戰情中心")
+        # [修改] 標題改為 招生狀況
+        st.subheader("📊 招生狀況")
         
         if not df.empty:
             total_count = len(df)
@@ -252,31 +242,28 @@ if menu == "👶 新生報名管理":
                     display_df.astype(str).apply(lambda x: x.str.contains(search_query, case=False)).any(axis=1)
                 ]
 
-            # [調整] 這裡是你要求的欄位順序：幼兒資料放到後面
+            # [修改] 欄位順序調整：幼兒生日改到第3欄
             main_cols = [
                 '已聯繫', 
-                '報名狀態', 
-                '登記日期',       # [新增]
+                '報名狀態',
+                '幼兒生日',       # <--- 移到這裡 (第3欄)
+                '登記日期',       
                 '預計入學資訊', 
                 '家長稱呼', 
                 '電話', 
                 '推薦人', 
                 '備註',
-                '幼兒生日',       # [新增] 
-                '幼兒姓名'        # [移動] 到最後
+                '幼兒姓名'        
             ]
             
             for c in main_cols:
                 if c not in display_df.columns: display_df[c] = ""
             
-            # 確保電話是字串，才不會被當成數字去掉0
             display_df['電話'] = display_df['電話'].astype(str)
 
-            # [修正] 設定 column_config 避免報錯，並解決電話 0 不見的問題
             cols_config = {
                 "已聯繫": st.column_config.CheckboxColumn("已聯繫", width="small", default=False),
                 "報名狀態": st.column_config.SelectboxColumn("報名狀態", options=["排隊候補", "已確認/已繳費", "考慮中/參觀"], width="medium", required=True),
-                # 使用 TextColumn 強制電話顯示為文字
                 "電話": st.column_config.TextColumn("電話", width="medium", help="聯絡電話"),
                 "預計入學資訊": st.column_config.TextColumn("入學年段", width="medium"),
                 "備註": st.column_config.TextColumn("備註", width="large"),
@@ -307,14 +294,12 @@ if menu == "👶 新生報名管理":
                 if st.button("💾 確認儲存變更", type="primary", use_container_width=True):
                     full_df = df.copy()
                     
-                    # 更新邏輯
                     for idx, row in edit_df.iterrows():
                         if idx in full_df.index:
                             full_df.at[idx, '報名狀態'] = row['報名狀態']
                             full_df.at[idx, '已聯繫'] = row['已聯繫']
                             full_df.at[idx, '備註'] = row['備註']
-                            full_df.at[idx, '幼兒姓名'] = row['幼兒姓名'] # 允許補登
-                            # 注意：data_editor 如果沒改動，電話會保持原樣，如果改動，會傳回字串
+                            full_df.at[idx, '幼兒姓名'] = row['幼兒姓名']
                     
                     final_df = full_df.copy()
                     
