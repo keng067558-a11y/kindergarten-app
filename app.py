@@ -1,16 +1,4 @@
-with st.expander(f"👤 {parent_name} | 📞 {phone_num} (共 {len(group_data)} 位幼兒)", key=f"exp_{phone_num}_{key_suffix}"):```
-*   當您在 **「待聯繫」** (todo) 分頁裡操作時，Streamlit 會為彭小姐產生一個 `key="exp_0937566445_todo"`。
-*   當您在 **「已聯繫」** (done) 分頁裡操作時，Streamlit 也會為張小姐產生一個 `key="exp_0912345678_done"`。
-*   **問題出在**，您在 **「全部資料」** (all) 分頁裡，也會產生一個 `key="exp_0937566445_all"`。
 
-當您切換分頁時，Streamlit 會同時繪製兩個或多個頁面，如果同一個電話號碼 (`phone_num`) 出現在多個頁面中，它們的 `key` 就會衝突。
-
-**解決方案 (加入唯一識別碼)：**
-要讓 `expander` 的 Key 變成絕對唯一，我們不能只依賴 `phone_num`。我們必須加上一個 **時間戳記 (Timestamp)** 或 **隨機數**，確保每次執行程式時 Key 都是唯一的。
-
-我會修改 `render_student_list` 的函數定義，讓它接收一個 **獨特的 key** 來作為所有組件的前綴。
-
-請更新 `app.py`，全選覆蓋：
 
 ```python
 import streamlit as st
