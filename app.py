@@ -177,29 +177,24 @@ def add_child_callback():
         "備註": note
     })
     
-    # 清空幼兒欄位
     st.session_state.input_c_name = "" 
     st.session_state.input_note = ""
 
-# [新增] 最終送出的回調函數 (解決 StreamlitAPIException 的關鍵)
+# [新增] 最終送出的回調函數
 def submit_all_callback():
-    # 從 session_state 讀取家長資料
     p_name = st.session_state.input_p_name
     p_title = st.session_state.input_p_title
     phone = st.session_state.input_phone
     referrer = st.session_state.input_referrer
     
-    # 檢查必填
     if not p_name or not phone:
         st.session_state['msg_error'] = "❌ 請填寫家長姓氏與電話"
         return
 
-    # 檢查是否有幼兒名字在輸入框但未加入
     if st.session_state.input_c_name != "":
         st.session_state['msg_warning'] = "⚠️ 您輸入框裡還有名字，但沒有按「加入暫存」。請先加入暫存再送出。"
         return
 
-    # 執行儲存
     current_df = load_registered_data()
     new_rows = []
     
@@ -223,8 +218,6 @@ def submit_all_callback():
         
         if sync_data_to_gsheets(updated_df):
             st.session_state['msg_success'] = f"✅ 成功新增 {len(new_rows)} 位幼兒資料！"
-            
-            # [安全清空] 這裡在回調函數內清空，不會報錯
             st.session_state.temp_children = []
             st.session_state.input_p_name = ""
             st.session_state.input_phone = ""
@@ -247,7 +240,6 @@ if menu == "👶 新生報名管理":
     if 'msg_warning' not in st.session_state: st.session_state['msg_warning'] = None
     if 'temp_children' not in st.session_state: st.session_state.temp_children = []
 
-    # 顯示並重置訊息 (確保訊息只出現一次)
     if st.session_state['msg_success']:
         st.balloons()
         st.success(st.session_state['msg_success'])
@@ -266,11 +258,12 @@ if menu == "👶 新生報名管理":
     if not df.empty:
         df['已聯繫'] = df['聯繫狀態'].apply(lambda x: True if str(x).strip() == '已聯繫' else False)
 
-    tab1, tab2, tab3 = st.tabs(["➕ 新增報名", "📂 新生資料庫", "📅 未來入學名單預覽"])
+    # [新增] Tab 2: 🔍 快速查詢
+    tab1, tab2, tab3, tab4 = st.tabs(["➕ 新增報名", "🔍 快速查詢", "📂 新生資料庫", "📅 未來入學名單預覽"])
 
     # --- Tab 1: 新增 ---
     with tab1:
-        st.subheader("第一步：填寫家長資料")
+        st.subheader("第一步：填寫家長資料 (共用)")
         c_p1, c_p2, c_p3 = st.columns([2, 1, 2])
         p_name = c_p1.text_input("家長姓氏 (必填)", key="input_p_name")
         p_title = c_p2.selectbox("稱謂", ["先生", "小姐", "爸爸", "媽媽"], key="input_p_title")
@@ -278,7 +271,7 @@ if menu == "👶 新生報名管理":
         referrer = st.text_input("推薦人 (選填)", key="input_referrer")
         
         st.divider()
-        st.subheader("第二步：新增幼兒")
+        st.subheader("第二步：新增幼兒 (可連續加入)")
         st.caption("💡 提示：輸入完一位幼兒後，請務必按下 **「⬇️ 加入暫存清單」**，再輸入下一位。")
         
         c_k1, c_k2 = st.columns([1, 2])
@@ -292,18 +285,44 @@ if menu == "👶 新生報名管理":
 
         st.button("⬇️ 加入暫存清單 (還有下一位)", on_click=add_child_callback, type="secondary")
 
-        # 顯示暫存區
         if st.session_state.temp_children:
             st.info(f"目前已暫存 {len(st.session_state.temp_children)} 位幼兒")
             st.table(pd.DataFrame(st.session_state.temp_children))
-            
-            # [修正] 這裡使用 on_click 綁定回調函數，而不是在 if 裡面執行
             st.button("✅ 確認送出所有資料 (結束)", type="primary", on_click=submit_all_callback)
         else:
             st.info("尚未加入任何幼兒資料。請填寫上方資料並按下「加入暫存清單」。")
 
-    # --- Tab 2: 新生資料庫 ---
+    # --- Tab 2: 快速查詢 (新功能) ---
     with tab2:
+        st.subheader("🔍 快速查詢報名資料")
+        st.caption("輸入電話、家長姓名或幼兒姓名，確認資料是否已建立。")
+        
+        keyword = st.text_input("請輸入關鍵字", placeholder="例如：0912345678 或 陳大寶")
+        
+        if keyword:
+            if not df.empty:
+                # 搜尋邏輯：將整列轉字串後比對
+                mask = df.astype(str).apply(lambda x: x.str.contains(keyword, case=False)).any(axis=1)
+                result_df = df[mask]
+                
+                if not result_df.empty:
+                    st.success(f"✅ 找到 {len(result_df)} 筆資料：")
+                    
+                    # 顯示簡化版的結果，方便閱讀
+                    show_cols = ['報名狀態', '幼兒姓名', '家長稱呼', '電話', '預計入學資訊', '備註']
+                    # 確保欄位存在
+                    valid_cols = [c for c in show_cols if c in result_df.columns]
+                    
+                    st.dataframe(result_df[valid_cols], use_container_width=True)
+                else:
+                    st.warning("❌ 查無資料，請確認關鍵字是否正確，或前往「新增報名」頁籤建立資料。")
+            else:
+                st.info("目前資料庫是空的。")
+        else:
+            st.info("請輸入關鍵字開始搜尋。")
+
+    # --- Tab 3: 新生資料庫 ---
+    with tab3:
         st.subheader("📂 新生資料庫")
         
         if not df.empty:
@@ -370,8 +389,8 @@ if menu == "👶 新生報名管理":
         else:
             st.info("目前無資料。")
 
-    # --- Tab 3: 未來入學名單預覽 ---
-    with tab3:
+    # --- Tab 4: 未來入學名單預覽 ---
+    with tab4:
         st.subheader("📅 未來入學名單預覽")
         this_year = date.today().year - 1911
         search_year = st.number_input("請輸入查詢學年 (民國)", min_value=this_year, max_value=this_year+10, value=this_year+1)
