@@ -51,15 +51,12 @@ def load_registered_data():
         sheet = connect_to_gsheets()
         data = sheet.get_all_values()
         if not data: return pd.DataFrame()
-        
         headers = data[0]
         rows = data[1:]
         df = pd.DataFrame(rows, columns=headers)
-        
         if '電話' in df.columns:
             df['電話'] = df['電話'].astype(str).str.strip()
             df['電話'] = df['電話'].apply(lambda x: '0' + x if len(x) == 9 and x.startswith('9') else x)
-            
         return df
     except Exception as e:
         return pd.DataFrame()
@@ -74,24 +71,19 @@ def sync_data_to_gsheets(new_df):
     try:
         sheet = connect_to_gsheets()
         save_df = new_df.copy()
-        
         if '已聯繫' in save_df.columns:
             save_df['聯繫狀態'] = save_df['已聯繫'].apply(lambda x: '已聯繫' if x is True else '未聯繫')
             save_df = save_df.drop(columns=['已聯繫'])
         
         final_cols = ['報名狀態', '聯繫狀態', '登記日期', '幼兒姓名', '家長稱呼', '電話', '幼兒生日', '預計入學資訊', '推薦人', '備註']
-        
         for col in final_cols:
             if col not in save_df.columns: save_df[col] = ""
-            
         save_df = save_df[final_cols]
         save_df = save_df.astype(str)
-        
         sheet.clear()
         sheet.append_row(final_cols)
         if not save_df.empty:
             sheet.append_rows(save_df.values.tolist())
-            
         load_registered_data.clear()
         return True
     except Exception as e:
@@ -105,15 +97,12 @@ def roc_date_input(label, default_date=None, key_suffix=""):
     st.markdown(f"**{label}**")
     c1, c2, c3 = st.columns([1, 1, 1])
     if default_date is None: default_date = date.today()
-    
     k_y = f"year_{key_suffix}"
     k_m = f"month_{key_suffix}"
     k_d = f"day_{key_suffix}"
-    
     roc_year = c1.selectbox("民國(年)", range(100, 121), index=(default_date.year - 1911) - 100, key=k_y)
     month = c2.selectbox("月", range(1, 13), index=default_date.month-1, key=k_m)
     day = c3.selectbox("日", range(1, 32), index=default_date.day-1, key=k_d)
-    
     try: return date(roc_year + 1911, month, day)
     except: return date.today()
 
@@ -155,19 +144,13 @@ def add_child_callback():
     c_name = st.session_state.input_c_name
     note = st.session_state.input_note
     status = st.session_state.input_status
-    
     y = st.session_state.year_add
     m = st.session_state.month_add
     d = st.session_state.day_add
-    
-    try:
-        dob_obj = date(y + 1911, m, d)
-    except:
-        dob_obj = date.today()
-        
+    try: dob_obj = date(y + 1911, m, d)
+    except: dob_obj = date.today()
     auto_plans = calculate_admission_roadmap(dob_obj)
     auto_plan = auto_plans[0] if auto_plans else "年齡不符/待確認"
-    
     st.session_state.temp_children.append({
         "幼兒姓名": c_name if c_name else "(未填)",
         "幼兒生日": to_roc_str(dob_obj),
@@ -175,7 +158,6 @@ def add_child_callback():
         "預計入學資訊": auto_plan,
         "備註": note
     })
-    
     st.session_state.input_c_name = "" 
     st.session_state.input_note = ""
 
@@ -184,18 +166,14 @@ def submit_all_callback():
     p_title = st.session_state.input_p_title
     phone = st.session_state.input_phone
     referrer = st.session_state.input_referrer
-    
     if not p_name or not phone:
         st.session_state['msg_error'] = "❌ 請填寫家長姓氏與電話"
         return
-
     if st.session_state.input_c_name != "":
         st.session_state['msg_warning'] = "⚠️ 您輸入框裡還有名字，但沒有按「加入暫存」。請先加入暫存再送出。"
         return
-
     current_df = load_registered_data()
     new_rows = []
-    
     for child in st.session_state.temp_children:
         new_rows.append({
             '報名狀態': child['報名狀態'],
@@ -209,14 +187,11 @@ def submit_all_callback():
             '推薦人': referrer,
             '備註': child['備註']
         })
-    
     if new_rows:
         new_df_chunk = pd.DataFrame(new_rows)
         updated_df = pd.concat([current_df, new_df_chunk], ignore_index=True)
-        
         if sync_data_to_gsheets(updated_df):
             st.session_state['msg_success'] = f"✅ 成功新增 {len(new_rows)} 位幼兒資料！"
-            
             st.session_state.temp_children = []
             st.session_state.input_p_name = ""
             st.session_state.input_phone = ""
@@ -230,10 +205,13 @@ def submit_all_callback():
 st.set_page_config(page_title="新生管理系統", layout="wide")
 st.title("🏫 新生管理系統")
 
+# [修正] 使用 Session State 控制側邊欄與 Tab 跳轉
+if 'active_tab' not in st.session_state:
+    st.session_state.active_tab = "tab1" # 預設第一個
+
 menu = st.sidebar.radio("系統切換", ["👶 新生報名管理", "👩‍🏫 師生人力預估系統"])
 
 if menu == "👶 新生報名管理":
-    # 初始化訊息狀態
     if 'msg_success' not in st.session_state: st.session_state['msg_success'] = None
     if 'msg_error' not in st.session_state: st.session_state['msg_error'] = None
     if 'msg_warning' not in st.session_state: st.session_state['msg_warning'] = None
@@ -251,12 +229,12 @@ if menu == "👶 新生報名管理":
         st.session_state['msg_warning'] = None
 
     df = load_registered_data()
-    
     if not df.empty and '聯繫狀態' not in df.columns: df['聯繫狀態'] = '未聯繫'
     if not df.empty and '報名狀態' not in df.columns: df['報名狀態'] = '排隊候補'
     if not df.empty:
         df['已聯繫'] = df['聯繫狀態'].apply(lambda x: True if str(x).strip() == '已聯繫' else False)
 
+    # 建立 Tabs 物件
     tab1, tab2, tab3, tab4 = st.tabs(["➕ 新增報名", "🔍 快速查詢", "📂 新生資料庫", "📅 未來入學名單預覽"])
 
     # --- Tab 1: 新增 ---
@@ -269,14 +247,11 @@ if menu == "👶 新生報名管理":
         referrer = st.text_input("推薦人 (選填)", key="input_referrer")
         
         st.divider()
-        st.subheader("第二步：新增幼兒 (可連續加入)")
-        st.caption("💡 提示：輸入完一位幼兒後，請務必按下 **「⬇️ 加入暫存清單」**，再輸入下一位。")
-        
+        st.subheader("第二步：新增幼兒")
         c_k1, c_k2 = st.columns([1, 2])
         with c_k1:
             st.text_input("幼兒姓名 (選填)", key="input_c_name")
             roc_date_input("幼兒出生年月日", date(2021, 9, 2), key_suffix="add")
-        
         with c_k2:
             st.selectbox("報名狀態", ["排隊候補", "已確認/已繳費", "考慮中/參觀"], key="input_status")
             st.text_area("備註事項", placeholder="例如：雙胞胎哥哥、過敏...", height=100, key="input_note")
@@ -288,7 +263,7 @@ if menu == "👶 新生報名管理":
             st.table(pd.DataFrame(st.session_state.temp_children))
             st.button("✅ 確認送出所有資料 (結束)", type="primary", on_click=submit_all_callback)
         else:
-            st.info("尚未加入任何幼兒資料。請填寫上方資料並按下「加入暫存清單」。")
+            st.info("尚未加入任何幼兒資料。")
 
     # --- Tab 2: 快速查詢 ---
     with tab2:
@@ -307,14 +282,25 @@ if menu == "👶 新生報名管理":
                     st.dataframe(result_df[valid_cols], use_container_width=True)
                     
                     st.divider()
-                    with st.expander("🗑️ 刪除查詢結果中的資料"):
-                        del_options = result_df.apply(lambda x: f"#{x.name+1} | {x['家長稱呼']} | {x['幼兒姓名']} ({x['電話']})", axis=1).tolist()
+                    
+                    # [新增] 查詢結果刪除功能
+                    with st.expander("🗑️ 刪除查詢結果中的資料 (慎用)"):
+                        # 使用 index 作為唯一識別，防止雙胞胎資料誤刪
+                        del_options = result_df.apply(
+                            lambda x: f"#{x.name+1} | {x['家長稱呼']} | {x['幼兒姓名']} ({x['電話']})", 
+                            axis=1
+                        ).tolist()
+                        
                         delete_list_search = st.multiselect("請勾選要刪除的資料", del_options)
+                        
                         if delete_list_search:
                             if st.button("確認刪除勾選資料", type="primary"):
                                 full_df = df.copy()
+                                # 解析 index
                                 indices_to_drop = [int(item.split("|")[0].replace("#", "").strip()) - 1 for item in delete_list_search]
+                                
                                 final_df = full_df.drop(indices_to_drop)
+                                
                                 if sync_data_to_gsheets(final_df):
                                     st.success("✅ 資料已刪除！")
                                     load_registered_data.clear()
@@ -324,183 +310,160 @@ if menu == "👶 新生報名管理":
             else:
                 st.info("目前資料庫是空的。")
 
-    # --- Tab 3: 新生資料庫 ---
+    # --- Tab 3: 新生資料庫 (專業版) ---
     with tab3:
         st.subheader("📂 新生資料庫")
         
         if not df.empty:
-            total_count = len(df)
-            uncontacted_count = len(df[df['已聯繫'] == False])
-            confirmed_count = len(df[df['報名狀態'].str.contains("已確認") | df['報名狀態'].str.contains("繳費")])
-            waitlist_count = len(df[df['報名狀態'].str.contains("排隊")])
-
-            kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-            kpi1.metric("總登記人數", total_count)
-            kpi2.metric("待聯繫", uncontacted_count, delta=f"-{uncontacted_count} 需處理", delta_color="inverse")
-            kpi3.metric("已確認入學", confirmed_count, "🎉")
-            kpi4.metric("排隊候補中", waitlist_count)
-
-            st.divider()
+            # 1. 欄位控制器 (View Controller)
+            with st.expander("👁️ 顯示欄位設定", expanded=False):
+                all_cols = ['已聯繫', '報名狀態', '幼兒生日', '登記日期', '家長稱呼', '電話', '推薦人', '備註', '幼兒姓名', '預計入學資訊']
+                selected_cols = st.multiselect("選擇要顯示的欄位", all_cols, default=['已聯繫', '報名狀態', '家長稱呼', '電話', '備註', '幼兒姓名'])
             
-            csv = df.to_csv(index=False).encode('utf-8-sig')
-            st.download_button("📥 下載 Excel", data=csv, file_name='kindergarten_data.csv', mime='text/csv')
-
+            # 2. 表格顯示
             display_df = df.copy()
-
-            main_cols = ['已聯繫', '報名狀態', '幼兒生日', '登記日期', '家長稱呼', '電話', '推薦人', '備註', '幼兒姓名', '預計入學資訊']
-            for c in main_cols:
+            # 補齊欄位
+            for c in all_cols:
                 if c not in display_df.columns: display_df[c] = ""
             display_df['電話'] = display_df['電話'].astype(str)
 
+            # 設定欄位格式 (顏色標籤)
             cols_config = {
                 "已聯繫": st.column_config.CheckboxColumn("已聯繫", width="small", default=False),
-                "報名狀態": st.column_config.SelectboxColumn("報名狀態", options=["排隊候補", "已確認/已繳費", "考慮中/參觀"], width="medium", required=True),
+                "報名狀態": st.column_config.SelectboxColumn(
+                    "報名狀態", 
+                    options=["排隊候補", "已確認/已繳費", "考慮中/參觀"], 
+                    width="medium", 
+                    required=True
+                ),
                 "電話": st.column_config.TextColumn("電話", width="medium"),
-                "預計入學資訊": st.column_config.TextColumn("入學年段", width="medium"),
                 "備註": st.column_config.TextColumn("備註", width="large"),
-                "登記日期": st.column_config.TextColumn("登記日期", width="small"),
                 "幼兒生日": st.column_config.TextColumn("幼兒生日", width="small"),
             }
             
-            st.caption(f"共顯示 {len(display_df)} 筆資料。")
+            # 使用 container_width=True 讓表格填滿
+            st.caption(f"共 {len(display_df)} 筆資料")
             
-            edit_df = st.data_editor(display_df[main_cols], column_config=cols_config, hide_index=True, use_container_width=True, num_rows="fixed", height=500)
+            edit_df = st.data_editor(
+                display_df[selected_cols], # 只顯示選取的欄位
+                column_config=cols_config,
+                hide_index=True,
+                use_container_width=True,
+                num_rows="fixed",
+                height=600 # 增加高度，方便瀏覽
+            )
             
-            col_del, col_save = st.columns([2, 1])
-            with col_del:
-                del_options = edit_df.apply(lambda x: f"#{x.name+1} | {x['家長稱呼']} | {x['幼兒姓名']} ({x['幼兒生日']})", axis=1).tolist()
-                delete_list = st.multiselect("🗑️ 批次刪除 (含編號)", del_options)
+            st.divider()
             
-            with col_save:
-                if st.button("💾 確認儲存變更", type="primary", use_container_width=True):
-                    full_df = df.copy()
-                    for idx, row in edit_df.iterrows():
-                        if idx in full_df.index:
-                            full_df.at[idx, '報名狀態'] = row['報名狀態']
-                            full_df.at[idx, '已聯繫'] = row['已聯繫']
-                            full_df.at[idx, '備註'] = row['備註']
-                            full_df.at[idx, '幼兒姓名'] = row['幼兒姓名']
-                    final_df = full_df.copy()
-                    if delete_list:
-                        indices_to_drop = [int(item.split("|")[0].replace("#", "").strip()) - 1 for item in delete_list]
-                        final_df = final_df.drop(indices_to_drop)
-                    
-                    if sync_data_to_gsheets(final_df):
-                        st.success("✅ 儲存成功！")
-                        load_registered_data.clear()
-                        st.rerun()
+            # 3. 操作區 (下載 + 儲存 + 刪除)
+            c1, c2 = st.columns([1, 1])
+            with c1:
+                # 刪除功能
+                del_options = edit_df.apply(lambda x: f"#{x.name+1} | {x.get('家長稱呼','')} | {x.get('幼兒姓名','')} ", axis=1).tolist()
+                delete_list = st.multiselect("🗑️ 批次刪除", del_options)
+            
+            with c2:
+                # 下載按鈕
+                csv = df.to_csv(index=False).encode('utf-8-sig')
+                st.download_button("📥 下載完整 Excel", data=csv, file_name='kindergarten_data.csv', mime='text/csv', use_container_width=True)
+
+            if st.button("💾 確認儲存所有變更 (包含修改與刪除)", type="primary", use_container_width=True):
+                full_df = df.copy()
+                
+                # 更新修改
+                for idx, row in edit_df.iterrows():
+                    if idx in full_df.index:
+                        # 只更新有顯示出來的欄位
+                        for col in selected_cols:
+                            if col in full_df.columns:
+                                full_df.at[idx, col] = row[col]
+                
+                final_df = full_df.copy()
+                
+                # 執行刪除
+                if delete_list:
+                    indices_to_drop = [int(item.split("|")[0].replace("#", "").strip()) - 1 for item in delete_list]
+                    final_df = final_df.drop(indices_to_drop)
+                
+                if sync_data_to_gsheets(final_df):
+                    st.success("✅ 資料庫已更新！")
+                    load_registered_data.clear()
+                    st.rerun()
         else:
             st.info("目前無資料。")
 
-    # --- Tab 4: 未來入學名單預覽 (專業版) ---
+    # --- Tab 4: 未來入學名單預覽 ---
     with tab4:
         st.subheader("📅 未來入學名單預覽")
         this_year = date.today().year - 1911
         search_year = st.number_input("請輸入查詢學年 (民國)", min_value=this_year, max_value=this_year+10, value=this_year+1)
         st.divider()
         
-        # [新增] 該學年總覽儀表板
         if not df.empty:
             total_eligible = 0
             contacted = 0
             confirmed = 0
-            
-            # 先跑一次迴圈計算統計數據
             temp_roster = []
+            
             for _, row in df.iterrows():
                 try:
                     dob_str = str(row['幼兒生日'])
                     dob_parts = dob_str.split('/')
                     dob_obj = date(int(dob_parts[0])+1911, int(dob_parts[1]), int(dob_parts[2]))
                     grade = get_grade_for_year(dob_obj, search_year)
-                    
                     if grade in ["托嬰中心", "幼幼班", "小班", "中班", "大班"]:
                         total_eligible += 1
                         if row['已聯繫']: contacted += 1
                         if "已確認" in row['報名狀態'] or "繳費" in row['報名狀態']: confirmed += 1
-                        
-                        # 儲存資料供後續顯示
                         temp_roster.append({
-                            "grade": grade,
-                            "index": _, # 原始索引，用於更新
-                            "已聯繫": row['已聯繫'],
-                            "報名狀態": row['報名狀態'],
-                            "家長稱呼": row['家長稱呼'],
-                            "電話": row['電話'],
-                            "備註": row['備註']
+                            "grade": grade, "index": _, 
+                            "已聯繫": row['已聯繫'], "報名狀態": row['報名狀態'], 
+                            "家長稱呼": row['家長稱呼'], "電話": row['電話'], "備註": row['備註']
                         })
                 except: pass
             
-            # 顯示儀表板
             st.markdown(f"### 📊 民國 {search_year} 學年度招生總覽")
             k1, k2, k3 = st.columns(3)
             k1.metric("符合資格總人數", total_eligible)
-            k2.metric("已確認入學", confirmed, help="狀態為「已確認」或「已繳費」")
-            
-            # 聯絡進度條
-            contact_rate = contacted / total_eligible if total_eligible > 0 else 0
-            st.write(f"📞 **聯絡進度：{int(contact_rate*100)}%** ({contacted}/{total_eligible})")
-            st.progress(contact_rate)
+            k2.metric("已確認入學", confirmed)
+            st.progress(contacted / total_eligible if total_eligible > 0 else 0)
             
             st.divider()
-
-            # [新增] 分班顯示並允許編輯
             grades_order = ["托嬰中心", "幼幼班", "小班", "中班", "大班"]
-            
             for g in grades_order:
-                # 篩選出該班級的學生
                 class_students = [s for s in temp_roster if s['grade'] == g]
                 count = len(class_students)
-                
                 with st.expander(f"📍 {g} (符合資格：{count} 人)", expanded=(count > 0)):
                     if count > 0:
-                        # 轉成 DataFrame 顯示
                         class_df = pd.DataFrame(class_students)
-                        
-                        # 設定欄位編輯器
                         cols_config = {
                             "已聯繫": st.column_config.CheckboxColumn("已聯繫", width="small"),
-                            "報名狀態": st.column_config.TextColumn("狀態 (唯讀)", width="medium", disabled=True), # 這裡只顯示，修改去總表
+                            "報名狀態": st.column_config.TextColumn("狀態", width="medium", disabled=True),
                             "家長稱呼": st.column_config.TextColumn("家長", width="medium", disabled=True),
                             "電話": st.column_config.TextColumn("電話", width="medium", disabled=True),
                             "備註": st.column_config.TextColumn("備註", width="large", disabled=True)
                         }
-                        
-                        # 顯示可編輯表格 (只開放勾選已聯繫)
                         edited_class_df = st.data_editor(
                             class_df[["已聯繫", "報名狀態", "家長稱呼", "電話", "備註"]],
-                            column_config=cols_config,
-                            hide_index=True,
-                            use_container_width=True,
-                            key=f"editor_{search_year}_{g}"
+                            column_config=cols_config, hide_index=True, use_container_width=True, key=f"ed_{search_year}_{g}"
                         )
-                        
-                        # [新增] 儲存按鈕 (針對該班級)
-                        if st.button(f"💾 儲存 {g} 的聯絡進度", key=f"btn_{search_year}_{g}"):
-                            # 更新邏輯
+                        if st.button(f"💾 儲存 {g} 變更", key=f"btn_{search_year}_{g}"):
                             full_df = df.copy()
                             has_changes = False
-                            
-                            # 比對差異
                             for i, row in enumerate(class_students):
                                 original_idx = row['index']
                                 new_val = edited_class_df.iloc[i]['已聯繫']
                                 if full_df.at[original_idx, '已聯繫'] != new_val:
                                     full_df.at[original_idx, '已聯繫'] = new_val
                                     has_changes = True
-                            
                             if has_changes:
                                 if sync_data_to_gsheets(full_df):
-                                    st.success(f"✅ {g} 聯絡進度已更新！")
+                                    st.success("✅ 更新成功！")
                                     load_registered_data.clear()
-                                    time.sleep(1) # 稍等一下讓使用者看到成功訊息
+                                    time.sleep(1)
                                     st.rerun()
-                            else:
-                                st.info("沒有變更需要儲存。")
-                    else:
-                        st.write("無符合資格名單")
-        else:
-            st.info("目前無報名資料可供運算。")
+                    else: st.write("無名單")
+        else: st.info("無資料")
 
 elif menu == "👩‍🏫 師生人力預估系統":
     st.header("📊 未來學年師生人力預估")
