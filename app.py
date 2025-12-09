@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import math
 import os
+import datetime  # 新增：處理日期需要這個工具
 
 # --- 設定資料庫檔案名稱 (CSV) ---
 # 注意：在 Streamlit Cloud 免費版，App 重啟後 CSV 資料會重置
@@ -73,33 +74,47 @@ if menu == "目前學生管理":
     st.dataframe(df_students, use_container_width=True)
 
 # ==========================================
-# 功能 2: 新生報名
+# 功能 2: 新生報名 (這裡有重大更新！)
 # ==========================================
 elif menu == "新生報名":
     st.header("📝 新生報名登記")
     
-    # 1. 讀取資料
-    df_reg = load_data(REGISTRATION_FILE, ['家長姓名', '幼兒姓名', '電話', '預計班級'])
+    # 1. 讀取資料 (欄位增加了)
+    columns = ['報名日期', '家長姓名', '幼兒姓名', '家長電話', '聯絡方式', '預計班級']
+    df_reg = load_data(REGISTRATION_FILE, columns)
 
     # 2. 報名表單
     with st.form("reg_form"):
-        p_name = st.text_input("家長姓名")
-        c_name = st.text_input("幼兒姓名")
-        phone = st.text_input("聯絡電話")
+        # 新增：日期選擇器 (預設今天)
+        reg_date = st.date_input("報名日期", datetime.date.today())
+        
+        col1, col2 = st.columns(2)
+        p_name = col1.text_input("家長姓名")
+        c_name = col2.text_input("幼兒姓名")
+        
+        col3, col4 = st.columns(2)
+        phone = col3.text_input("家長電話")
+        # 新增：聯絡方式下拉選單
+        contact_method = col4.selectbox("偏好聯絡方式", ["電話", "Line", "Email", "親自拜訪"])
+        
         target = st.selectbox("預計入學班級", ["大班", "中班", "小班"])
         
         if st.form_submit_button("提交報名"):
             if p_name and c_name:
                 new_reg = pd.DataFrame([{
-                    '家長姓名': p_name, '幼兒姓名': c_name, 
-                    '電話': phone, '預計班級': target
+                    '報名日期': reg_date,
+                    '家長姓名': p_name, 
+                    '幼兒姓名': c_name, 
+                    '家長電話': phone,
+                    '聯絡方式': contact_method,
+                    '預計班級': target
                 }])
                 df_reg = pd.concat([df_reg, new_reg], ignore_index=True)
                 save_data(df_reg, REGISTRATION_FILE)
                 st.success("報名成功！")
                 st.rerun()
             else:
-                st.error("請填寫姓名")
+                st.error("請至少填寫姓名")
 
     st.divider()
     st.subheader("📞 待聯絡清單")
