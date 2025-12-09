@@ -155,8 +155,8 @@ if menu == "👶 新生報名管理":
     if not df.empty:
         df['已聯繫'] = df['聯繫狀態'].apply(lambda x: True if str(x).strip() == '已聯繫' else False)
 
-    # [修改] 這裡變成 3 個分頁，第三個是您要的新功能
-    tab1, tab2, tab3 = st.tabs(["➕ 新增報名", "📊 招生狀況", "📅 未來入學名單預覽"])
+    # [修改] Tab 2 名稱改為「新生資料庫」
+    tab1, tab2, tab3 = st.tabs(["➕ 新增報名", "📂 新生資料庫", "📅 未來入學名單預覽"])
 
     # --- Tab 1: 新增 ---
     with tab1:
@@ -212,10 +212,12 @@ if menu == "👶 新生報名管理":
             else:
                 st.error("❌ 請確認「家長姓氏」與「電話」已填寫")
 
-    # --- Tab 2: 列表管理 ---
+    # --- Tab 2: 新生資料庫 ---
     with tab2:
-        st.subheader("📊 招生狀況")
+        st.subheader("📂 新生資料庫")
+        
         if not df.empty:
+            # 1. KPI 指標 (保留)
             total_count = len(df)
             uncontacted_count = len(df[df['已聯繫'] == False])
             confirmed_count = len(df[df['報名狀態'].str.contains("已確認") | df['報名狀態'].str.contains("繳費")])
@@ -229,19 +231,12 @@ if menu == "👶 新生報名管理":
 
             st.divider()
             
-            # 搜尋與下載
-            col_tool1, col_tool2 = st.columns([3, 1])
-            with col_tool1:
-                search_query = st.text_input("🔍 搜尋資料", placeholder="輸入姓名、電話或備註...")
-            with col_tool2:
-                csv = df.to_csv(index=False).encode('utf-8-sig')
-                st.download_button("📥 下載 Excel", data=csv, file_name='kindergarten_data.csv', mime='text/csv', use_container_width=True)
+            # [修改] 移除搜尋列，只保留下載按鈕
+            csv = df.to_csv(index=False).encode('utf-8-sig')
+            st.download_button("📥 下載 Excel", data=csv, file_name='kindergarten_data.csv', mime='text/csv')
 
+            # [修改] 直接顯示完整資料，不進行搜尋篩選
             display_df = df.copy()
-            if search_query:
-                display_df = display_df[
-                    display_df.astype(str).apply(lambda x: x.str.contains(search_query, case=False)).any(axis=1)
-                ]
 
             main_cols = ['已聯繫', '報名狀態', '幼兒生日', '登記日期', '預計入學資訊', '家長稱呼', '電話', '推薦人', '備註', '幼兒姓名']
             for c in main_cols:
@@ -254,10 +249,13 @@ if menu == "👶 新生報名管理":
                 "電話": st.column_config.TextColumn("電話", width="medium"),
                 "預計入學資訊": st.column_config.TextColumn("入學年段", width="medium"),
                 "備註": st.column_config.TextColumn("備註", width="large"),
+                "登記日期": st.column_config.TextColumn("登記日期", width="small"),
                 "幼兒生日": st.column_config.TextColumn("幼兒生日", width="small"),
             }
             
-            edit_df = st.data_editor(display_df[main_cols], column_config=cols_config, hide_index=True, use_container_width=True, num_rows="fixed", height=400)
+            st.caption(f"共顯示 {len(display_df)} 筆資料。")
+            
+            edit_df = st.data_editor(display_df[main_cols], column_config=cols_config, hide_index=True, use_container_width=True, num_rows="fixed", height=500)
             
             col_del, col_save = st.columns([2, 1])
             with col_del:
@@ -285,21 +283,18 @@ if menu == "👶 新生報名管理":
         else:
             st.info("目前無資料。")
 
-    # --- Tab 3: 未來入學名單預覽 (新功能) ---
+    # --- Tab 3: 未來入學名單預覽 ---
     with tab3:
         st.subheader("📅 未來入學名單預覽")
         st.caption("🔍 選擇一個未來的學年度，系統會自動幫您列出資料庫中「符合該年段資格」的所有孩子（包含排隊與已確認）。")
         
-        # 1. 選擇學年
         this_year = date.today().year - 1911
         search_year = st.number_input("請輸入您想查詢的學年 (民國)", min_value=this_year, max_value=this_year+10, value=this_year+1)
         
         st.divider()
         st.write(f"### 🏫 民國 {search_year} 學年度 - 入學名單")
 
-        # 2. 運算邏輯：把所有報名資料掃一遍，自動分類
         if not df.empty:
-            # 準備容器
             roster = {
                 "托嬰中心": [],
                 "幼幼班": [],
@@ -310,16 +305,13 @@ if menu == "👶 新生報名管理":
             
             for _, row in df.iterrows():
                 try:
-                    # 抓生日
                     dob_str = str(row['幼兒生日'])
                     dob_parts = dob_str.split('/')
                     dob_obj = date(int(dob_parts[0])+1911, int(dob_parts[1]), int(dob_parts[2]))
                     
-                    # 算在查詢年是幾年級
                     grade = get_grade_for_year(dob_obj, search_year)
                     
                     if grade in roster:
-                        # 整理要顯示的資料
                         status_icon = "🟢" if "已確認" in row['報名狀態'] else "🟡"
                         roster[grade].append({
                             "狀態": f"{status_icon} {row['報名狀態']}",
@@ -331,14 +323,11 @@ if menu == "👶 新生報名管理":
                 except:
                     pass
 
-            # 3. 顯示結果 (使用 Expander 摺疊選單，分類顯示)
             grades_order = ["托嬰中心", "幼幼班", "小班", "中班", "大班"]
             
             for g in grades_order:
                 students = roster[g]
                 count = len(students)
-                
-                # 摺疊區塊標題
                 with st.expander(f"📍 {g} (符合資格：{count} 人)", expanded=(count > 0)):
                     if count > 0:
                         st_df = pd.DataFrame(students)
@@ -388,18 +377,14 @@ elif menu == "👩‍🏫 師生人力預估系統":
                 for _, row in df_new.iterrows():
                     plan_str = str(row['預計入學資訊'])
                     status = str(row['報名狀態'])
-                    
-                    # 雙重確認：既要符合年段，也要符合資格
                     try:
                         dob_str = str(row['幼兒生日'])
                         dob_parts = dob_str.split('/')
                         dob_obj = date(int(dob_parts[0])+1911, int(dob_parts[1]), int(dob_parts[2]))
                         grade = get_grade_for_year(dob_obj, year)
-                        
                         target_grade = None
                         if grade in ["托嬰中心", "幼幼班", "小班", "中班", "大班"]:
                             target_grade = grade
-                        
                         if target_grade:
                             if "已確認" in status or "繳費" in status: confirmed_counts[target_grade] += 1
                             else: waitlist_counts[target_grade] += 1
@@ -416,20 +401,4 @@ elif menu == "👩‍🏫 師生人力預估系統":
                 total_possible = base + wait
                 tea_min = math.ceil(base / ratio) if base > 0 else 0
                 tea_max = math.ceil(total_possible / ratio) if total_possible > 0 else 0
-                total_teachers_min += tea_min
-                total_teachers_max += tea_max
-                
-                data.append({
-                    "班級": grade,
-                    "師生比": f"1:{ratio}",
-                    "已確認人數": base,
-                    "排隊/考慮": wait,
-                    "預估總人數": total_possible,
-                    "需老師": f"{tea_min} ~ {tea_max} 位"
-                })
-            
-            st.dataframe(pd.DataFrame(data), use_container_width=True)
-            st.caption(f"💡 結論：老師需求介於 **{total_teachers_min}** ~ **{total_teachers_max}** 位")
-            st.divider()
-    else:
-        st.info("請選擇學年。")
+                total_teac
