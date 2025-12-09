@@ -55,15 +55,7 @@ st.markdown("""
     .tag-yellow { background-color: #f1c40f; color: #333; }
     .tag-blue { background-color: #17a2b8; }
     
-    /* 浮動儲存按鈕樣式 (模擬) */
-    .save-btn-container {
-        position: sticky;
-        top: 0;
-        z-index: 999;
-        background: white;
-        padding: 10px 0;
-        border-bottom: 1px solid #eee;
-    }
+    div.stButton > button { border-radius: 8px; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -234,10 +226,6 @@ def add_child_callback():
     st.session_state.input_c_name = "" 
     st.session_state.input_note = ""
 
-def remove_child_callback(index):
-    if 0 <= index < len(st.session_state.temp_children):
-        st.session_state.temp_children.pop(index)
-
 def submit_all_callback():
     p_name = st.session_state.input_p_name
     p_title = st.session_state.input_p_title
@@ -370,28 +358,6 @@ elif menu == "📂 資料管理中心":
         grouped_df = display_df.groupby('電話')
         st.caption(f"共找到 {len(grouped_df)} 個家庭 (共 {len(display_df)} 位幼兒)")
         
-        # [修改] 全域儲存按鈕
-        st.warning("⚠️ 修改完資料後，請務必點擊下方的 **「💾 儲存所有變更」** 按鈕，資料才會寫入資料庫！")
-        
-        if st.button("💾 儲存所有變更", type="primary", use_container_width=True):
-            # 從 session_state 中讀取所有變更並更新 df
-            has_changes = False
-            for idx, changes in st.session_state.edited_rows.items():
-                for col, val in changes.items():
-                    df.at[idx, col] = val
-                    has_changes = True
-            
-            if has_changes:
-                if sync_data_to_gsheets(df):
-                    st.success("✅ 所有變更已儲存！")
-                    st.session_state.edited_rows = {} # 清空暫存變更
-                    time.sleep(1)
-                    st.rerun()
-            else:
-                st.info("沒有偵測到任何變更。")
-
-        st.divider()
-
         # 遍歷顯示資料
         for phone_num, group_data in grouped_df:
             first_row = group_data.iloc[0]
@@ -418,11 +384,8 @@ elif menu == "📂 資料管理中心":
                     </div>
                     """, unsafe_allow_html=True)
                     
-                    # [修改] 編輯表單 (不含按鈕，直接綁定到 session state)
+                    # 編輯表單 (直接綁定到 session state)
                     c1, c2 = st.columns([1, 1])
-                    
-                    # 使用 key 來區分每個元件，並透過 on_change 紀錄變更
-                    # 這裡比較特別：我們不直接寫入 df，而是寫入 session_state 的 edited_rows
                     
                     def update_value(i, c, k):
                         if i not in st.session_state.edited_rows:
@@ -439,7 +402,7 @@ elif menu == "📂 資料管理中心":
                     curr_status_idx = status_opts.index(row['報名狀態']) if row['報名狀態'] in status_opts else 0
                     st.selectbox("報名狀態", status_opts, index=curr_status_idx, key=k_status, on_change=update_value, args=(idx, '報名狀態', k_status))
                     
-                    # 3. 入學年段 (邏輯同前，自動計算)
+                    # 3. 入學年段
                     k_grade = f"grade_{idx}"
                     current_plan = row['預計入學資訊']
                     try:
@@ -456,13 +419,33 @@ elif menu == "📂 資料管理中心":
                     k_note = f"note_{idx}"
                     st.text_area("備註", value=row['備註'], height=68, key=k_note, on_change=update_value, args=(idx, '備註', k_note))
 
-                    # 刪除按鈕 (獨立運作，因為刪除是重大操作，建議還是獨立按鈕)
+                    # 刪除按鈕 (獨立運作)
                     if st.button("🗑️ 刪除此幼兒", key=f"del_btn_{idx}"):
                         df = df.drop(idx)
                         if sync_data_to_gsheets(df):
                             st.success("✅ 刪除成功！")
                             st.rerun()
                     st.divider()
+        
+        st.write("")
+        st.write("")
+        # [修改] 按鈕移到底部，移除警告文字
+        if st.button("💾 儲存所有變更", type="primary", use_container_width=True):
+            has_changes = False
+            for idx, changes in st.session_state.edited_rows.items():
+                for col, val in changes.items():
+                    df.at[idx, col] = val
+                    has_changes = True
+            
+            if has_changes:
+                if sync_data_to_gsheets(df):
+                    st.success("✅ 所有變更已儲存！")
+                    st.session_state.edited_rows = {}
+                    time.sleep(1)
+                    st.rerun()
+            else:
+                st.info("沒有偵測到任何變更。")
+
     else:
         st.info("目前無資料。")
 
