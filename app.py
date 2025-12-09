@@ -5,55 +5,75 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 # --- 設定 ---
-# 這是您的 Google 試算表名稱，請確保一定要跟雲端硬碟的一樣
 SHEET_NAME = 'kindergarten_db'
 
-# --- [核心] 連線 Google Sheets ---
+# --- 連線設定 ---
 def connect_to_gsheets():
-    # 從 Streamlit Secrets 讀取鑰匙
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-    # 這裡會讀取您在 Streamlit 後台設定的 secrets
     creds_dict = dict(st.secrets["gcp_service_account"])
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     client = gspread.authorize(creds)
     return client.open(SHEET_NAME).sheet1
 
-# --- [功能] 讀取資料 ---
+# --- 讀取資料 ---
 def load_data():
     try:
         sheet = connect_to_gsheets()
         data = sheet.get_all_records()
         df = pd.DataFrame(data)
-        # 確保欄位順序正確
-        expected_cols = ['登記日期', '幼兒姓名', '家長稱呼', '電話', '幼兒生日', '預計入學資訊']
-        # 如果是空的表，回傳空 DataFrame
+        
+        # 確保欄位順序與存在
+        expected_cols = ['聯繫狀態', '登記日期', '幼兒姓名', '家長稱呼', '電話', '幼兒生日', '預計入學資訊']
+        
         if df.empty:
             return pd.DataFrame(columns=expected_cols)
-        return df
+        
+        # 如果 Google Sheet 裡原本沒有「聯繫狀態」，幫它補上預設值
+        if '聯繫狀態' not in df.columns:
+            df['聯繫狀態'] = '未聯繫'
+            
+        # 為了讓 App 顯示勾選框，我們把 "已聯繫" 轉成 True，其他轉成 False
+        df['已聯繫'] = df['聯繫狀態'] == '已聯繫'
+        
+        # 調整欄位顯示順序 (把勾選框放到最前面)
+        cols_order = ['已聯繫'] + [c for c in expected_cols if c != '聯繫狀態']
+        return df[cols_order]
+        
     except Exception as e:
-        st.error(f"無法讀取資料表，請檢查 Google Sheet 設定。錯誤: {e}")
+        st.error(f"無法讀取資料，請確認 Google Sheet 是否已新增「聯繫狀態」欄位。錯誤: {e}")
         return pd.DataFrame()
 
-# --- [功能] 新增資料 ---
-def add_row_to_gsheets(row_data):
-    sheet = connect_to_gsheets()
-    sheet.append_row(row_data)
-
-# --- [功能] 刪除資料 (根據姓名和電話) ---
-def delete_row_from_gsheets(name, phone):
-    sheet = connect_to_gsheets()
-    # 尋找符合的列 (Row)
-    cell = sheet.find(name)
-    # 簡單防呆：確認該列的電話也相符才刪除，避免刪錯同名的人
-    row_num = cell.row
-    row_values = sheet.row_values(row_num)
-    # row_values[3] 是電話欄位 (第4欄)
-    if str(row_values[3]) == str(phone):
-        sheet.delete_rows(row_num)
+# --- [核心功能] 同步所有變更回 Google Sheet ---
+def sync_data_to_gsheets(new_df):
+    try:
+        sheet = connect_to_gsheets()
+        
+        # 1. 處理資料格式：把 App 上的 True/False 轉回文字 "已聯繫"/"未聯繫"
+        save_df = new_df.copy()
+        save_df['聯繫狀態'] = save_df['已聯繫'].apply(lambda x: '已聯繫' if x else '未聯繫')
+        
+        # 2. 移除暫時用的 Boolean 欄位
+        save_df = save_df.drop(columns=['已聯繫'])
+        
+        # 3. 確保欄位順序正確
+        final_cols = ['登記日期', '幼兒姓名', '家長稱呼', '電話', '幼兒生日', '預計入學資訊', '聯繫狀態']
+        save_df = save_df[final_cols]
+        
+        # 4. 全表更新 (Clear -> Update)
+        sheet.clear() # 清空舊資料
+        # 寫入標題
+        sheet.append_row(final_cols)
+        # 寫入內容 (如果有的話)
+        if not save_df.empty:
+            # gspread 需要 list of lists
+            sheet.append_rows(save_df.values.tolist())
+            
         return True
-    return False
+    except Exception as e:
+        st.error(f"儲存失敗: {e}")
+        return False
 
-# --- 工具函式 (民國日期等) ---
+# --- 工具函式 ---
 def roc_date_input(label, default_date=None):
     st.markdown(f"**{label}**")
     c1, c2, c3 = st.columns([1, 1, 1])
@@ -90,10 +110,11 @@ def calculate_admission_roadmap(dob):
 st.set_page_config(page_title="幼兒園新生管理", layout="wide")
 st.title("☁️ 雲端幼兒園新生管理系統")
 
-# 1. 讀取 Google Sheet 資料
-df = load_data()
+# 每次重新整理都重新讀取最新資料
+if 'df_cache' not in st.session_state:
+    st.session_state.df_cache = load_data()
 
-tab1, tab2 = st.tabs(["➕ 新增報名", "🗑️ 管理與刪除"])
+tab1, tab2 = st.tabs(["➕ 新增報名", "✏️ 管理列表 (勾選/刪除)"])
 
 # --- 分頁 1: 新增 ---
 with tab1:
@@ -103,7 +124,6 @@ with tab1:
         st.subheader("輸入資料")
         child_name = st.text_input("幼兒姓名")
         dob = roc_date_input("幼兒生日", date(2021, 9, 2))
-        
         c1, c2 = st.columns(2)
         p_name = c1.text_input("家長姓氏")
         p_title = c2.selectbox("稱謂", ["先生", "小姐", "爸爸", "媽媽"])
@@ -119,51 +139,84 @@ with tab1:
             st.warning("年齡不符，無法排程")
             selected_plan = "不符資格"
 
-    if st.button("提交並儲存至雲端", type="primary"):
+    if st.button("提交並儲存", type="primary"):
         if child_name and p_name and phone and selected_plan != "不符資格":
-            row = [
-                to_roc_str(date.today()),
-                child_name,
-                f"{p_name} {p_title}",
-                phone,
-                to_roc_str(dob),
-                selected_plan
-            ]
-            add_row_to_gsheets(row)
-            st.success("✅ 資料已安全儲存到 Google 試算表！")
-            st.cache_data.clear() # 清除快取以顯示最新資料
-            st.rerun()
+            # 先讀取最新的資料
+            current_df = load_data()
+            
+            # 建立新的一筆 (注意欄位要對應)
+            new_row = pd.DataFrame([{
+                '已聯繫': False, # 預設未聯繫
+                '登記日期': to_roc_str(date.today()),
+                '幼兒姓名': child_name,
+                '家長稱呼': f"{p_name} {p_title}",
+                '電話': phone,
+                '幼兒生日': to_roc_str(dob),
+                '預計入學資訊': selected_plan
+            }])
+            
+            # 合併並存回雲端
+            updated_df = pd.concat([current_df, new_row], ignore_index=True)
+            if sync_data_to_gsheets(updated_df):
+                st.success("✅ 資料已新增！")
+                st.session_state.df_cache = load_data() # 更新快取
+                st.rerun()
         else:
             st.error("資料不完整")
 
-# --- 分頁 2: 管理與刪除 ---
+# --- 分頁 2: 管理與刪除 (新功能) ---
 with tab2:
-    st.subheader("📋 目前資料庫清單")
-    st.dataframe(df, use_container_width=True)
-    
+    st.subheader("📋 報名資料管理")
+    st.caption("💡 提示：您可以直接在表格上勾選「已聯繫」，或選取多人進行刪除，最後記得按「儲存變更」。")
+
+    # 1. 顯示可編輯的表格 (Data Editor)
+    # df_cache 是我們暫存的資料
+    edit_df = st.data_editor(
+        st.session_state.df_cache,
+        column_config={
+            "已聯繫": st.column_config.CheckboxColumn(
+                "已聯繫?",
+                help="勾選表示已聯繫家長",
+                default=False,
+            ),
+            "預計入學資訊": st.column_config.TextColumn("預計入學資訊", width="medium"),
+        },
+        disabled=["登記日期", "幼兒姓名", "電話"], # 禁止修改這幾欄，怕亂掉
+        hide_index=True,
+        use_container_width=True,
+        key="editor"
+    )
+
     st.divider()
-    st.subheader("🗑️ 刪除資料")
-    st.write("請選擇要刪除的對象：")
     
-    if not df.empty:
-        # 製作一個選單，顯示 "姓名 - 電話" 避免刪錯人
-        delete_options = df.apply(lambda x: f"{x['幼兒姓名']} (電話: {x['電話']})", axis=1).tolist()
-        to_delete = st.selectbox("選擇刪除對象", delete_options)
-        
-        if st.button("確認刪除此筆資料"):
-            # 解析出姓名和電話
-            target_name = to_delete.split(" (電話: ")[0]
-            target_phone = to_delete.split(" (電話: ")[1].replace(")", "")
+    col_del, col_save = st.columns([2, 1])
+
+    # 2. 多選刪除功能
+    with col_del:
+        st.write("🗑️ **批次刪除**")
+        # 製作一個選單，顯示姓名+電話
+        if not edit_df.empty:
+            options = edit_df.apply(lambda x: f"{x['幼兒姓名']} ({x['電話']})", axis=1).tolist()
+            delete_list = st.multiselect("選擇要刪除的資料 (可多選)", options)
+        else:
+            delete_list = []
+
+    # 3. 儲存按鈕
+    with col_save:
+        st.write("💾 **儲存所有變更**")
+        if st.button("確認執行修改與刪除", type="primary"):
+            # A. 處理刪除：過濾掉被選中的人
+            final_df = edit_df.copy()
+            if delete_list:
+                # 找出要保留的資料 (不在刪除清單裡的)
+                # 我們重建識別字串來比對
+                final_df['id_temp'] = final_df.apply(lambda x: f"{x['幼兒姓名']} ({x['電話']})", axis=1)
+                final_df = final_df[~final_df['id_temp'].isin(delete_list)]
+                # 刪掉暫時用的欄位
+                final_df = final_df.drop(columns=['id_temp'])
             
-            try:
-                success = delete_row_from_gsheets(target_name, target_phone)
-                if success:
-                    st.success(f"已刪除 {target_name}")
-                    st.cache_data.clear()
-                    st.rerun()
-                else:
-                    st.error("找不到相符資料，可能已被刪除")
-            except Exception as e:
-                st.error(f"刪除失敗: {e}")
-    else:
-        st.info("目前沒有資料可以刪除")
+            # B. 執行同步回 Google Sheet
+            if sync_data_to_gsheets(final_df):
+                st.success("✅ 所有變更已儲存！(狀態更新 + 刪除執行)")
+                st.session_state.df_cache = load_data() # 重新讀取確保一致
+                st.rerun()
