@@ -184,3 +184,165 @@ if menu == "👶 新生報名管理":
                 
                 # 如果沒填名字，自動填入空白或備註
                 final_child_name = child_name if child_name else ""
+                
+                new_row = pd.DataFrame([{
+                    '報名狀態': status,
+                    '已聯繫': False,
+                    '登記日期': to_roc_str(date.today()),
+                    '幼兒姓名': final_child_name,
+                    '家長稱呼': f"{p_name} {p_title}",
+                    '電話': phone,
+                    '幼兒生日': to_roc_str(dob),
+                    '預計入學資訊': selected_plan,
+                    '推薦人': referrer,
+                    '備註': note
+                }])
+                updated_df = pd.concat([current_df, new_row], ignore_index=True)
+                if sync_data_to_gsheets(updated_df):
+                    st.success(f"✅ 已新增資料 (家長：{p_name} {p_title})")
+                    st.session_state.df_cache = load_registered_data()
+                    st.rerun()
+            else:
+                st.error("❌ 請確認「家長姓氏」與「電話」已填寫")
+
+    with tab2:
+        st.subheader("📋 報名資料管理")
+        if not df.empty:
+            cols_config = {
+                "已聯繫": st.column_config.CheckboxColumn("已聯繫", width="small"),
+                "報名狀態": st.column_config.SelectboxColumn("報名狀態", options=["排隊候補", "已確認/已繳費", "考慮中/參觀"], width="medium", required=True),
+                "幼兒姓名": st.column_config.TextColumn("幼兒姓名", width="medium"), # 允許編輯
+                "預計入學資訊": st.column_config.TextColumn("入學年段", width="medium"),
+                "備註": st.column_config.TextColumn("備註", width="large"),
+            }
+            
+            display_cols = ['已聯繫', '報名狀態', '幼兒姓名', '預計入學資訊', '家長稱呼', '電話', '推薦人', '備註']
+            for c in display_cols:
+                if c not in df.columns: df[c] = ""
+            
+            edit_df = st.data_editor(
+                df[display_cols],
+                column_config=cols_config,
+                disabled=["電話", "預計入學資訊"], # 開放編輯姓名，方便日後補上
+                hide_index=True,
+                use_container_width=True
+            )
+            
+            col_del, col_save = st.columns([2, 1])
+            with col_del:
+                # [修改] 刪除選單的顯示邏輯：加上家長資訊，防止沒名字無法辨識
+                options = edit_df.apply(
+                    lambda x: f"{x['幼兒姓名'] if x['幼兒姓名'] else '(未填姓名)'} | 家長: {x['家長稱呼']} | {x['電話']}", 
+                    axis=1
+                ).tolist()
+                delete_list = st.multiselect("批次刪除 (格式: 姓名 | 家長 | 電話)", options)
+            
+            with col_save:
+                if st.button("確認執行修改與刪除", type="primary"):
+                    full_df = df.copy()
+                    for idx, row in edit_df.iterrows():
+                        if idx in full_df.index:
+                            full_df.at[idx, '報名狀態'] = row['報名狀態']
+                            full_df.at[idx, '已聯繫'] = row['已聯繫']
+                            full_df.at[idx, '備註'] = row['備註']
+                            full_df.at[idx, '幼兒姓名'] = row['幼兒姓名'] # 允許補登姓名
+                    
+                    final_df = full_df.copy()
+                    if delete_list:
+                        # 重新產生識別字串來比對刪除
+                        final_df['id_temp'] = final_df.apply(
+                            lambda x: f"{x['幼兒姓名'] if x['幼兒姓名'] else '(未填姓名)'} | 家長: {x['家長稱呼']} | {x['電話']}", 
+                            axis=1
+                        )
+                        final_df = final_df[~final_df['id_temp'].isin(delete_list)]
+                        final_df = final_df.drop(columns=['id_temp'])
+                    
+                    if sync_data_to_gsheets(final_df):
+                        st.success("✅ 儲存成功！")
+                        st.session_state.df_cache = load_registered_data()
+                        st.rerun()
+        else:
+            st.info("目前無資料")
+
+# ------------------------------------------
+# 系統二：師生人力預估系統
+# ------------------------------------------
+elif menu == "👩‍🏫 師生人力預估系統":
+    st.header("📊 未來學年師生人力預估")
+    
+    with st.expander("⚙️ 師生比參數設定", expanded=False):
+        c1, c2, c3 = st.columns(3)
+        ratio_daycare = c1.number_input("托嬰 (0-2歲)", value=5)
+        ratio_toddler = c2.number_input("幼幼 (2-3歲)", value=8)
+        ratio_normal = c3.number_input("小/中/大 (3-6歲)", value=15)
+
+    df_current = load_current_students() 
+    df_new = load_registered_data()
+    if not df_new.empty and '報名狀態' not in df_new.columns: df_new['報名狀態'] = '排隊候補'
+
+    today = date.today()
+    this_roc_year = today.year - 1911
+    if today.month < 8: this_roc_year -= 1
+    
+    target_years = st.multiselect("請選擇預估學年", [this_roc_year+1, this_roc_year+2, this_roc_year+3], default=[this_roc_year+1])
+
+    if target_years:
+        st.divider()
+        for year in sorted(target_years):
+            st.subheader(f"📅 民國 {year} 學年度")
+            confirmed_counts = {"托嬰中心": 0, "幼幼班": 0, "小班": 0, "中班": 0, "大班": 0}
+            waitlist_counts = {"托嬰中心": 0, "幼幼班": 0, "小班": 0, "中班": 0, "大班": 0}
+            
+            if not df_current.empty:
+                for _, row in df_current.iterrows():
+                    try:
+                        dob_obj = datetime.strptime(str(row['出生年月日']), "%Y-%m-%d").date()
+                        grade = get_grade_for_year(dob_obj, year)
+                        if grade in confirmed_counts: confirmed_counts[grade] += 1
+                    except: pass
+
+            if not df_new.empty:
+                for _, row in df_new.iterrows():
+                    plan_str = str(row['預計入學資訊'])
+                    status = str(row['報名狀態'])
+                    
+                    if f"{year} 學年" in plan_str:
+                        target_grade = None
+                        if "幼幼班" in plan_str: target_grade = "幼幼班"
+                        elif "小班" in plan_str: target_grade = "小班"
+                        elif "中班" in plan_str: target_grade = "中班"
+                        elif "大班" in plan_str: target_grade = "大班"
+                        elif "托嬰" in plan_str: target_grade = "托嬰中心"
+                        
+                        if target_grade:
+                            if "已確認" in status or "繳費" in status: confirmed_counts[target_grade] += 1
+                            else: waitlist_counts[target_grade] += 1
+
+            data = []
+            total_teachers_min = 0
+            total_teachers_max = 0
+            class_rules = [("托嬰中心", ratio_daycare), ("幼幼班", ratio_toddler), ("小班", ratio_normal), ("中班", ratio_normal), ("大班", ratio_normal)]
+            
+            for grade, ratio in class_rules:
+                base = confirmed_counts[grade]
+                wait = waitlist_counts[grade]
+                total_possible = base + wait
+                tea_min = math.ceil(base / ratio) if base > 0 else 0
+                tea_max = math.ceil(total_possible / ratio) if total_possible > 0 else 0
+                total_teachers_min += tea_min
+                total_teachers_max += tea_max
+                
+                data.append({
+                    "班級": grade,
+                    "師生比": f"1:{ratio}",
+                    "已確認人數": base,
+                    "排隊/考慮": wait,
+                    "預估總人數": total_possible,
+                    "需老師": f"{tea_min} ~ {tea_max} 位"
+                })
+            
+            st.dataframe(pd.DataFrame(data), use_container_width=True)
+            st.caption(f"💡 結論：老師需求介於 **{total_teachers_min}** ~ **{total_teachers_max}** 位")
+            st.divider()
+    else:
+        st.info("請選擇學年。")
