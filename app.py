@@ -42,11 +42,25 @@ def connect_to_gsheets():
 def load_registered_data():
     try:
         sheet = connect_to_gsheets()
-        data = sheet.get_all_records()
-        df = pd.DataFrame(data)
-        if df.empty: return pd.DataFrame()
+        # [修正] 強制將所有資料先讀成字串，避免電話號碼被當成數字去頭
+        data = sheet.get_all_values()
+        if not data: return pd.DataFrame()
+        
+        # 第一列是標題，下面是資料
+        headers = data[0]
+        rows = data[1:]
+        df = pd.DataFrame(rows, columns=headers)
+        
+        # [修正] 電話號碼補 0 機制
+        if '電話' in df.columns:
+            # 去除空白
+            df['電話'] = df['電話'].astype(str).str.strip()
+            # 如果是 9 碼且開頭是 9，自動補 0 (針對台灣手機)
+            df['電話'] = df['電話'].apply(lambda x: '0' + x if len(x) == 9 and x.startswith('9') else x)
+            
         return df
-    except:
+    except Exception as e:
+        # st.error(f"讀取錯誤: {e}") 
         return pd.DataFrame()
 
 def load_current_students():
@@ -59,14 +73,23 @@ def sync_data_to_gsheets(new_df):
     try:
         sheet = connect_to_gsheets()
         save_df = new_df.copy()
+        
+        # 處理勾選框
         if '已聯繫' in save_df.columns:
-            save_df['聯繫狀態'] = save_df['已聯繫'].apply(lambda x: '已聯繫' if x else '未聯繫')
+            save_df['聯繫狀態'] = save_df['已聯繫'].apply(lambda x: '已聯繫' if x is True else '未聯繫')
             save_df = save_df.drop(columns=['已聯繫'])
         
+        # [調整] 確保欄位順序與完整性 (這裡決定了 Google Sheet 存檔的順序)
         final_cols = ['報名狀態', '聯繫狀態', '登記日期', '幼兒姓名', '家長稱呼', '電話', '幼兒生日', '預計入學資訊', '推薦人', '備註']
+        
         for col in final_cols:
             if col not in save_df.columns: save_df[col] = ""
+            
         save_df = save_df[final_cols]
+        
+        # 轉成字串防止存檔時格式跑掉
+        save_df = save_df.astype(str)
+        
         sheet.clear()
         sheet.append_row(final_cols)
         if not save_df.empty:
@@ -138,9 +161,12 @@ if menu == "👶 新生報名管理":
     df = st.session_state.df_cache
     if not df.empty and '聯繫狀態' not in df.columns: df['聯繫狀態'] = '未聯繫'
     if not df.empty and '報名狀態' not in df.columns: df['報名狀態'] = '排隊候補'
-    if not df.empty: df['已聯繫'] = df['聯繫狀態'] == '已聯繫'
+    
+    # [修正] 確保已聯繫欄位是布林值 (Boolean)，解決報錯關鍵
+    if not df.empty:
+        df['已聯繫'] = df['聯繫狀態'].apply(lambda x: True if str(x).strip() == '已聯繫' else False)
 
-    tab1, tab2 = st.tabs(["➕ 新增報名", "📊 招生管理儀表板"]) # 改名，聽起來比較厲害
+    tab1, tab2 = st.tabs(["➕ 新增報名", "📊 戰情管理儀表板"])
 
     with tab1:
         col_main, col_roadmap = st.columns([1, 1])
@@ -181,7 +207,7 @@ if menu == "👶 新生報名管理":
                     '登記日期': to_roc_str(date.today()),
                     '幼兒姓名': final_child_name,
                     '家長稱呼': f"{p_name} {p_title}",
-                    '電話': phone,
+                    '電話': str(phone), # 強制轉字串
                     '幼兒生日': to_roc_str(dob),
                     '預計入學資訊': selected_plan,
                     '推薦人': referrer,
@@ -196,135 +222,116 @@ if menu == "👶 新生報名管理":
                 st.error("❌ 請確認「家長姓氏」與「電話」已填寫")
 
     with tab2:
-        # ==========================================
-        # ✨ 專業級儀表板設計
-        # ==========================================
-        st.subheader("📊 招生情況")
+        st.subheader("📊 招生戰情中心")
         
         if not df.empty:
-            # 1. 關鍵指標 (KPI Cards)
-            # 計算數據
             total_count = len(df)
             uncontacted_count = len(df[df['已聯繫'] == False])
             confirmed_count = len(df[df['報名狀態'].str.contains("已確認") | df['報名狀態'].str.contains("繳費")])
             waitlist_count = len(df[df['報名狀態'].str.contains("排隊")])
 
-            # 顯示漂亮的指標卡
             kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-            kpi1.metric("總登記人數", total_count, help="目前資料庫總筆數")
-            kpi2.metric("待聯繫", uncontacted_count, delta=f"-{uncontacted_count} 需處理", delta_color="inverse", help="尚未聯繫的家長")
-            kpi3.metric("已確認入學", confirmed_count, "🎉", help="已繳費或確認就讀")
-            kpi4.metric("排隊候補中", waitlist_count, help="潛在生源")
+            kpi1.metric("總登記人數", total_count)
+            kpi2.metric("待聯繫", uncontacted_count, delta=f"-{uncontacted_count} 需處理", delta_color="inverse")
+            kpi3.metric("已確認入學", confirmed_count, "🎉")
+            kpi4.metric("排隊候補中", waitlist_count)
 
             st.divider()
 
-            # 2. 智慧工具列 (搜尋 + 匯出)
             col_tool1, col_tool2 = st.columns([3, 1])
             with col_tool1:
-                # 搜尋功能
-                search_query = st.text_input("🔍 搜尋資料", placeholder="輸入幼兒姓名、家長或電話...")
+                search_query = st.text_input("🔍 搜尋資料", placeholder="輸入姓名、電話或備註...")
             
             with col_tool2:
-                # 匯出按鈕
                 csv = df.to_csv(index=False).encode('utf-8-sig')
-                st.download_button(
-                    label="📥 下載 Excel (CSV)",
-                    data=csv,
-                    file_name='kindergarten_data.csv',
-                    mime='text/csv',
-                    use_container_width=True
-                )
+                st.download_button("📥 下載 Excel", data=csv, file_name='kindergarten_data.csv', mime='text/csv', use_container_width=True)
 
-            # 3. 資料篩選邏輯
-            # 如果有輸入搜尋文字，就過濾資料
             display_df = df.copy()
             if search_query:
                 display_df = display_df[
                     display_df.astype(str).apply(lambda x: x.str.contains(search_query, case=False)).any(axis=1)
                 ]
 
-            # 4. 專業表格顯示
-            cols_config = {
-                "已聯繫": st.column_config.CheckboxColumn("已聯繫", width="small"),
-                "報名狀態": st.column_config.SelectboxColumn(
-                    "報名狀態", 
-                    options=["排隊候補", "已確認/已繳費", "考慮中/參觀"], 
-                    width="medium",
-                    required=True
-                ),
-                "幼兒姓名": st.column_config.TextColumn("幼兒姓名", width="small"),
-                "預計入學資訊": st.column_config.TextColumn("入學年段", width="medium"),
-                "備註": st.column_config.TextColumn("備註", width="large"),
-                "電話": st.column_config.TextColumn("電話", width="medium"),
-            }
+            # [調整] 這裡是你要求的欄位順序：幼兒資料放到後面
+            main_cols = [
+                '已聯繫', 
+                '報名狀態', 
+                '登記日期',       # [新增]
+                '預計入學資訊', 
+                '家長稱呼', 
+                '電話', 
+                '推薦人', 
+                '備註',
+                '幼兒生日',       # [新增] 
+                '幼兒姓名'        # [移動] 到最後
+            ]
             
-            # 調整欄位順序，符合行政閱讀習慣
-            main_cols = ['已聯繫', '報名狀態', '預計入學資訊', '幼兒姓名', '家長稱呼', '電話', '推薦人', '備註']
-            # 補齊可能缺少的欄位
             for c in main_cols:
                 if c not in display_df.columns: display_df[c] = ""
+            
+            # 確保電話是字串，才不會被當成數字去掉0
+            display_df['電話'] = display_df['電話'].astype(str)
 
-            st.caption(f"共顯示 {len(display_df)} 筆資料。可以直接在表格修改狀態，修改後請按下方的「儲存變更」。")
+            # [修正] 設定 column_config 避免報錯，並解決電話 0 不見的問題
+            cols_config = {
+                "已聯繫": st.column_config.CheckboxColumn("已聯繫", width="small", default=False),
+                "報名狀態": st.column_config.SelectboxColumn("報名狀態", options=["排隊候補", "已確認/已繳費", "考慮中/參觀"], width="medium", required=True),
+                # 使用 TextColumn 強制電話顯示為文字
+                "電話": st.column_config.TextColumn("電話", width="medium", help="聯絡電話"),
+                "預計入學資訊": st.column_config.TextColumn("入學年段", width="medium"),
+                "備註": st.column_config.TextColumn("備註", width="large"),
+                "登記日期": st.column_config.TextColumn("登記日期", width="small"),
+                "幼兒生日": st.column_config.TextColumn("幼兒生日", width="small"),
+            }
+            
+            st.caption(f"共顯示 {len(display_df)} 筆資料。")
             
             edit_df = st.data_editor(
                 display_df[main_cols],
                 column_config=cols_config,
                 hide_index=True,
                 use_container_width=True,
-                num_rows="fixed", # 固定行數，避免誤按新增
-                height=400 # 設定高度，讓畫面更有質感
+                num_rows="fixed",
+                height=400
             )
             
-            st.write("") # 空行
-
-            # 5. 底部操作區
             col_del, col_save = st.columns([2, 1])
             with col_del:
-                # 刪除選單
                 del_options = edit_df.apply(
-                    lambda x: f"{x['幼兒姓名'] if x['幼兒姓名'] else '(未填)'} | {x['家長稱呼']} | {x['電話']}", 
+                    lambda x: f"{x['家長稱呼']} | {x['電話']} | {x['幼兒姓名']}", 
                     axis=1
                 ).tolist()
-                delete_list = st.multiselect("🗑️ 批次刪除 (可多選)", del_options)
+                delete_list = st.multiselect("🗑️ 批次刪除", del_options)
             
             with col_save:
-                # 儲存按鈕
-                if st.button("💾 確認儲存所有變更", type="primary", use_container_width=True):
-                    # 這裡需要把 edit_df (可能經過搜尋篩選) 的變更，合併回原始 df
-                    # 邏輯：利用電話+家長稱呼作為 key 來更新 (假設這兩個同時重複機率低)
-                    # 為了最安全，我們更新整個原始 df
-                    
+                if st.button("💾 確認儲存變更", type="primary", use_container_width=True):
                     full_df = df.copy()
                     
-                    # 逐行更新
+                    # 更新邏輯
                     for idx, row in edit_df.iterrows():
-                        # 因為 edit_df 經過篩選，index 可能跟 full_df 不同
-                        # 所以我們用原始資料的 index (如果沒經過篩選，index是一樣的)
-                        # 如果經過篩選，我們需要更聰明的對應方式
-                        # 簡單做法：我們在 data_editor 之前不重設 index，這樣 index 會保留
                         if idx in full_df.index:
                             full_df.at[idx, '報名狀態'] = row['報名狀態']
                             full_df.at[idx, '已聯繫'] = row['已聯繫']
                             full_df.at[idx, '備註'] = row['備註']
-                            full_df.at[idx, '幼兒姓名'] = row['幼兒姓名']
+                            full_df.at[idx, '幼兒姓名'] = row['幼兒姓名'] # 允許補登
+                            # 注意：data_editor 如果沒改動，電話會保持原樣，如果改動，會傳回字串
                     
                     final_df = full_df.copy()
                     
-                    # 處理刪除
                     if delete_list:
                         final_df['id_temp'] = final_df.apply(
-                            lambda x: f"{x['幼兒姓名'] if x['幼兒姓名'] else '(未填)'} | {x['家長稱呼']} | {x['電話']}", 
+                            lambda x: f"{x['家長稱呼']} | {x['電話']} | {x['幼兒姓名']}", 
                             axis=1
                         )
                         final_df = final_df[~final_df['id_temp'].isin(delete_list)]
                         final_df = final_df.drop(columns=['id_temp'])
                     
                     if sync_data_to_gsheets(final_df):
-                        st.success("✅ 儲存成功！資料庫已更新")
+                        st.success("✅ 儲存成功！")
                         st.session_state.df_cache = load_registered_data()
                         st.rerun()
         else:
-            st.info("目前無資料，請至「新增報名」頁籤輸入。")
+            st.info("目前無資料。")
 
 elif menu == "👩‍🏫 師生人力預估系統":
     st.header("📊 未來學年師生人力預估")
