@@ -181,7 +181,7 @@ if menu == "👶 新生報名管理":
 
         with col_roadmap:
             # 修正名稱：入學年段
-            st.subheader("入學年段判定")
+            st.subheader("入學年段")
             options = calculate_admission_roadmap(dob)
             if options:
                 st.info("家長預計登記之年段：")
