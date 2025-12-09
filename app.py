@@ -233,6 +233,7 @@ st.title("🏫 新生管理系統")
 menu = st.sidebar.radio("系統切換", ["👶 新生報名管理", "👩‍🏫 師生人力預估系統"])
 
 if menu == "👶 新生報名管理":
+    # 初始化訊息狀態
     if 'msg_success' not in st.session_state: st.session_state['msg_success'] = None
     if 'msg_error' not in st.session_state: st.session_state['msg_error'] = None
     if 'msg_warning' not in st.session_state: st.session_state['msg_warning'] = None
@@ -289,55 +290,39 @@ if menu == "👶 新生報名管理":
         else:
             st.info("尚未加入任何幼兒資料。請填寫上方資料並按下「加入暫存清單」。")
 
-    # --- Tab 2: 快速查詢 (更新版) ---
+    # --- Tab 2: 快速查詢 ---
     with tab2:
         st.subheader("🔍 快速查詢報名資料")
-        st.caption("輸入電話、家長姓名或幼兒姓名，確認資料是否已建立。")
-        keyword = st.text_input("請輸入關鍵字", placeholder="例如：0912345678 或 陳大寶")
+        keyword = st.text_input("請輸入關鍵字 (電話、姓名)", placeholder="例如：0912345678 或 陳大寶")
         
         if keyword:
             if not df.empty:
-                # 搜尋邏輯
                 mask = df.astype(str).apply(lambda x: x.str.contains(keyword, case=False)).any(axis=1)
                 result_df = df[mask]
                 
                 if not result_df.empty:
                     st.success(f"✅ 找到 {len(result_df)} 筆資料：")
-                    
                     show_cols = ['報名狀態', '幼兒姓名', '家長稱呼', '電話', '預計入學資訊', '備註']
                     valid_cols = [c for c in show_cols if c in result_df.columns]
                     st.dataframe(result_df[valid_cols], use_container_width=True)
                     
                     st.divider()
-                    
-                    # [新增] 查詢結果刪除功能
-                    with st.expander("🗑️ 刪除查詢結果中的資料 (慎用)"):
-                        # 使用 result_df 的 index 來產生選項，確保對應到原始資料
-                        del_options = result_df.apply(
-                            lambda x: f"#{x.name+1} | {x['家長稱呼']} | {x['幼兒姓名']} ({x['電話']})", 
-                            axis=1
-                        ).tolist()
-                        
+                    with st.expander("🗑️ 刪除查詢結果中的資料"):
+                        del_options = result_df.apply(lambda x: f"#{x.name+1} | {x['家長稱呼']} | {x['幼兒姓名']} ({x['電話']})", axis=1).tolist()
                         delete_list_search = st.multiselect("請勾選要刪除的資料", del_options)
-                        
                         if delete_list_search:
                             if st.button("確認刪除勾選資料", type="primary"):
                                 full_df = df.copy()
-                                # 解析要刪除的 index
                                 indices_to_drop = [int(item.split("|")[0].replace("#", "").strip()) - 1 for item in delete_list_search]
-                                
                                 final_df = full_df.drop(indices_to_drop)
-                                
                                 if sync_data_to_gsheets(final_df):
                                     st.success("✅ 資料已刪除！")
                                     load_registered_data.clear()
                                     st.rerun()
                 else:
-                    st.warning("❌ 查無資料，請確認關鍵字是否正確。")
+                    st.warning("❌ 查無資料。")
             else:
                 st.info("目前資料庫是空的。")
-        else:
-            st.info("請輸入關鍵字開始搜尋。")
 
     # --- Tab 3: 新生資料庫 ---
     with tab3:
@@ -407,38 +392,113 @@ if menu == "👶 新生報名管理":
         else:
             st.info("目前無資料。")
 
-    # --- Tab 4: 未來入學名單預覽 ---
+    # --- Tab 4: 未來入學名單預覽 (專業版) ---
     with tab4:
         st.subheader("📅 未來入學名單預覽")
         this_year = date.today().year - 1911
         search_year = st.number_input("請輸入查詢學年 (民國)", min_value=this_year, max_value=this_year+10, value=this_year+1)
         st.divider()
-        st.write(f"### 🏫 民國 {search_year} 學年度 - 入學名單")
-
+        
+        # [新增] 該學年總覽儀表板
         if not df.empty:
-            roster = {"托嬰中心": [], "幼幼班": [], "小班": [], "中班": [], "大班": []}
+            total_eligible = 0
+            contacted = 0
+            confirmed = 0
+            
+            # 先跑一次迴圈計算統計數據
+            temp_roster = []
             for _, row in df.iterrows():
                 try:
                     dob_str = str(row['幼兒生日'])
                     dob_parts = dob_str.split('/')
                     dob_obj = date(int(dob_parts[0])+1911, int(dob_parts[1]), int(dob_parts[2]))
                     grade = get_grade_for_year(dob_obj, search_year)
-                    if grade in roster:
-                        status_icon = "🟢" if "已確認" in row['報名狀態'] else "🟡"
-                        roster[grade].append({
-                            "狀態": f"{status_icon} {row['報名狀態']}",
-                            "家長": row['家長稱呼'],
+                    
+                    if grade in ["托嬰中心", "幼幼班", "小班", "中班", "大班"]:
+                        total_eligible += 1
+                        if row['已聯繫']: contacted += 1
+                        if "已確認" in row['報名狀態'] or "繳費" in row['報名狀態']: confirmed += 1
+                        
+                        # 儲存資料供後續顯示
+                        temp_roster.append({
+                            "grade": grade,
+                            "index": _, # 原始索引，用於更新
+                            "已聯繫": row['已聯繫'],
+                            "報名狀態": row['報名狀態'],
+                            "家長稱呼": row['家長稱呼'],
                             "電話": row['電話'],
                             "備註": row['備註']
                         })
                 except: pass
+            
+            # 顯示儀表板
+            st.markdown(f"### 📊 民國 {search_year} 學年度招生總覽")
+            k1, k2, k3 = st.columns(3)
+            k1.metric("符合資格總人數", total_eligible)
+            k2.metric("已確認入學", confirmed, help="狀態為「已確認」或「已繳費」")
+            
+            # 聯絡進度條
+            contact_rate = contacted / total_eligible if total_eligible > 0 else 0
+            st.write(f"📞 **聯絡進度：{int(contact_rate*100)}%** ({contacted}/{total_eligible})")
+            st.progress(contact_rate)
+            
+            st.divider()
 
-            for g in ["托嬰中心", "幼幼班", "小班", "中班", "大班"]:
-                students = roster[g]
-                count = len(students)
+            # [新增] 分班顯示並允許編輯
+            grades_order = ["托嬰中心", "幼幼班", "小班", "中班", "大班"]
+            
+            for g in grades_order:
+                # 篩選出該班級的學生
+                class_students = [s for s in temp_roster if s['grade'] == g]
+                count = len(class_students)
+                
                 with st.expander(f"📍 {g} (符合資格：{count} 人)", expanded=(count > 0)):
-                    if count > 0: st.table(pd.DataFrame(students))
-                    else: st.write("無符合資格名單")
+                    if count > 0:
+                        # 轉成 DataFrame 顯示
+                        class_df = pd.DataFrame(class_students)
+                        
+                        # 設定欄位編輯器
+                        cols_config = {
+                            "已聯繫": st.column_config.CheckboxColumn("已聯繫", width="small"),
+                            "報名狀態": st.column_config.TextColumn("狀態 (唯讀)", width="medium", disabled=True), # 這裡只顯示，修改去總表
+                            "家長稱呼": st.column_config.TextColumn("家長", width="medium", disabled=True),
+                            "電話": st.column_config.TextColumn("電話", width="medium", disabled=True),
+                            "備註": st.column_config.TextColumn("備註", width="large", disabled=True)
+                        }
+                        
+                        # 顯示可編輯表格 (只開放勾選已聯繫)
+                        edited_class_df = st.data_editor(
+                            class_df[["已聯繫", "報名狀態", "家長稱呼", "電話", "備註"]],
+                            column_config=cols_config,
+                            hide_index=True,
+                            use_container_width=True,
+                            key=f"editor_{search_year}_{g}"
+                        )
+                        
+                        # [新增] 儲存按鈕 (針對該班級)
+                        if st.button(f"💾 儲存 {g} 的聯絡進度", key=f"btn_{search_year}_{g}"):
+                            # 更新邏輯
+                            full_df = df.copy()
+                            has_changes = False
+                            
+                            # 比對差異
+                            for i, row in enumerate(class_students):
+                                original_idx = row['index']
+                                new_val = edited_class_df.iloc[i]['已聯繫']
+                                if full_df.at[original_idx, '已聯繫'] != new_val:
+                                    full_df.at[original_idx, '已聯繫'] = new_val
+                                    has_changes = True
+                            
+                            if has_changes:
+                                if sync_data_to_gsheets(full_df):
+                                    st.success(f"✅ {g} 聯絡進度已更新！")
+                                    load_registered_data.clear()
+                                    time.sleep(1) # 稍等一下讓使用者看到成功訊息
+                                    st.rerun()
+                            else:
+                                st.info("沒有變更需要儲存。")
+                    else:
+                        st.write("無符合資格名單")
         else:
             st.info("目前無報名資料可供運算。")
 
