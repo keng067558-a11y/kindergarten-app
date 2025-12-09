@@ -290,3 +290,60 @@ elif menu == "👩‍🏫 師生人力預估系統":
             if not df_current.empty:
                 for _, row in df_current.iterrows():
                     # 假設 CSV 有 '出生年月日' (格式 YYYY-MM-DD 或 YYYY/MM/DD)
+                    # 這裡簡化：若讀不到生日就跳過
+                    try:
+                        dob_obj = datetime.strptime(str(row['出生年月日']), "%Y-%m-%d").date()
+                        grade = get_grade_for_year(dob_obj, year)
+                        if grade in counts:
+                            counts[grade] += 1
+                    except:
+                        pass # 資料格式錯誤略過
+
+            # A2. 新生加入 (Registration)
+            if not df_new.empty:
+                for _, row in df_new.iterrows():
+                    # 欄位格式："114 學年 - 小班"
+                    plan_str = str(row['預計入學資訊'])
+                    if f"{year} 學年" in plan_str:
+                        # 解析出班級
+                        if "幼幼班" in plan_str: counts["幼幼班"] += 1
+                        elif "小班" in plan_str: counts["小班"] += 1
+                        elif "中班" in plan_str: counts["中班"] += 1
+                        elif "大班" in plan_str: counts["大班"] += 1
+                        elif "托嬰" in plan_str: counts["托嬰中心"] += 1
+
+            # --- 步驟 B: 計算師資 ---
+            # 製作顯示表格
+            data = []
+            total_teachers = 0
+            
+            # 定義順序與對應師生比
+            class_rules = [
+                ("托嬰中心", ratio_daycare),
+                ("幼幼班", ratio_toddler),
+                ("小班", ratio_normal),
+                ("中班", ratio_normal),
+                ("大班", ratio_normal)
+            ]
+            
+            for grade, ratio in class_rules:
+                stu_num = counts[grade]
+                # 無條件進位計算老師
+                tea_num = math.ceil(stu_num / ratio) if stu_num > 0 else 0
+                total_teachers += tea_num
+                
+                data.append({
+                    "班級": grade,
+                    "預估學生數": stu_num,
+                    "法定師生比": f"1 : {ratio}",
+                    "所需老師": tea_num
+                })
+            
+            # 顯示表格
+            res_df = pd.DataFrame(data)
+            st.table(res_df)
+            st.caption(f"💡 **民國 {year} 學年** 全園預計需要 **{total_teachers}** 位老師")
+            st.divider()
+
+    else:
+        st.info("請從上方選單選擇學年以開始計算。")
