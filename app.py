@@ -208,7 +208,6 @@ def calculate_admission_roadmap(dob):
 def add_child_callback():
     c_name = st.session_state.input_c_name
     note = st.session_state.input_note
-    # [修改] 預設狀態更名
     status = "排隊中" 
     y = st.session_state.year_add
     m = st.session_state.month_add
@@ -293,8 +292,7 @@ if st.session_state['msg_warning']:
 
 df = load_registered_data()
 if not df.empty and '聯繫狀態' not in df.columns: df['聯繫狀態'] = '未聯繫'
-# [修改] 預設狀態更名
-if not df.empty and '報名狀態' not in df.columns: df['報名狀態'] = '排隊中' 
+if not df.empty and '報名狀態' not in df.columns: df['報名狀態'] = '排隊中'
 if not df.empty:
     df['已聯繫'] = df['聯繫狀態'].apply(lambda x: True if str(x).strip() == '已聯繫' else False)
 
@@ -344,7 +342,7 @@ if menu == "👶 新增報名":
     else:
         st.caption("請在右側輸入幼兒資料並加入暫存。")
 
-# --- 頁面 2: 資料管理中心 ---
+# --- 頁面 2: 資料管理中心 (含已聯繫分頁) ---
 elif menu == "📂 資料管理中心":
     st.markdown("### 📂 資料管理中心")
     
@@ -357,15 +355,99 @@ elif menu == "📂 資料管理中心":
             st.download_button("📥 下載", data=csv, file_name='kindergarten_data.csv', mime='text/csv', use_container_width=True)
 
     if not df.empty:
-        display_df = df.copy()
+        # 搜尋邏輯
+        base_df = df.copy()
         if search_keyword:
-            display_df = display_df[display_df.astype(str).apply(lambda x: x.str.contains(search_keyword, case=False)).any(axis=1)]
+            base_df = base_df[base_df.astype(str).apply(lambda x: x.str.contains(search_keyword, case=False)).any(axis=1)]
 
-        grouped_df = display_df.groupby('電話')
-        st.caption(f"共找到 {len(grouped_df)} 個家庭 (共 {len(display_df)} 位幼兒)")
+        # [修改] 加入 3 個分頁
+        tab_todo, tab_done, tab_all = st.tabs(["📞 待聯繫名單 (優先)", "✅ 已聯繫名單", "📋 全部資料"])
+
+        # 定義顯示函數 (複用邏輯)
+        def render_student_list(target_df):
+            if target_df.empty:
+                st.info("此區塊目前無資料。")
+                return
+
+            grouped_df = target_df.groupby('電話')
+            st.caption(f"共找到 {len(grouped_df)} 個家庭 (共 {len(target_df)} 位幼兒)")
+            
+            for phone_num, group_data in grouped_df:
+                first_row = group_data.iloc[0]
+                parent_name = first_row['家長稱呼']
+                
+                with st.expander(f"👤 {parent_name} | 📞 {phone_num} (共 {len(group_data)} 位幼兒)"):
+                    for idx, row in group_data.iterrows():
+                        status_color = "tag-yellow"
+                        if "已安排" in str(row['報名狀態']): status_color = "tag-green"
+                        elif "考慮" in str(row['報名狀態']): status_color = "tag-blue"
+                        
+                        child_name_display = row['幼兒姓名'] if row['幼兒姓名'] else "(未填姓名)"
+                        
+                        st.markdown(f"""
+                        <div class="child-info-block">
+                            <div style="display:flex; justify-content:space-between; align-items:center;">
+                                <span style="font-size:1.1em; font-weight:bold; color:#333;">👶 {child_name_display}</span>
+                                <span class="card-tag {status_color}">{row['報名狀態']}</span>
+                            </div>
+                            <div style="color:#666; font-size:0.9em; margin-top:5px;">
+                                🎂 生日：{row['幼兒生日']} | 🏫 {row['預計入學資訊']}
+                            </div>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        
+                        # 編輯表單
+                        def update_value(i, c, k):
+                            if i not in st.session_state.edited_rows: st.session_state.edited_rows[i] = {}
+                            st.session_state.edited_rows[i][c] = st.session_state[k]
+
+                        k_contact = f"contact_{idx}"
+                        st.checkbox("已聯繫", value=row['已聯繫'], key=k_contact, on_change=update_value, args=(idx, '已聯繫', k_contact))
+                        
+                        k_status = f"status_{idx}"
+                        status_opts = ["排隊中", "已安排", "考慮中"]
+                        curr_val = row['報名狀態']
+                        if curr_val == "排隊候補": curr_val = "排隊中"
+                        if "已確認" in curr_val: curr_val = "已安排"
+                        if curr_val not in status_opts: status_opts.insert(0, curr_val)
+                        st.selectbox("報名狀態", status_opts, index=status_opts.index(curr_val), key=k_status, on_change=update_value, args=(idx, '報名狀態', k_status))
+                        
+                        k_grade = f"grade_{idx}"
+                        current_plan = row['預計入學資訊']
+                        try:
+                            dob_parts = str(row['幼兒生日']).split('/')
+                            dob_obj = date(int(dob_parts[0])+1911, int(dob_parts[1]), int(dob_parts[2]))
+                            possible_plans = calculate_admission_roadmap(dob_obj)
+                        except: possible_plans = [current_plan, "無法計算"]
+                        if current_plan not in possible_plans: possible_plans.insert(0, current_plan)
+                        st.selectbox("入學年段", possible_plans, index=possible_plans.index(current_plan), key=k_grade, on_change=update_value, args=(idx, '預計入學資訊', k_grade))
+                        
+                        k_note = f"note_{idx}"
+                        st.text_area("備註", value=row['備註'], height=68, key=k_note, on_change=update_value, args=(idx, '備註', k_note))
+
+                        if st.button("🗑️ 刪除此幼兒", key=f"del_btn_{idx}"):
+                            # 為了安全刪除，我們操作原始 df
+                            df = df.drop(idx)
+                            if sync_data_to_gsheets(df):
+                                st.success("✅ 刪除成功！")
+                                st.rerun()
+                        st.divider()
+
+        # 分頁 1: 待聯繫 (Contacted = False)
+        with tab_todo:
+            st.warning("🔔 這裡顯示 **尚未聯繫** 的家長，請優先處理。")
+            render_student_list(base_df[base_df['已聯繫'] == False])
+
+        # 分頁 2: 已聯繫 (Contacted = True)
+        with tab_done:
+            st.success("✅ 這裡顯示 **已經聯繫過** 的家長。")
+            render_student_list(base_df[base_df['已聯繫'] == True])
+
+        # 分頁 3: 全部
+        with tab_all:
+            render_student_list(base_df)
         
-        st.warning("⚠️ 修改完資料後，請務必點擊下方的 **「💾 儲存所有變更」** 按鈕，資料才會寫入資料庫！")
-        
+        st.write("")
         if st.button("💾 儲存所有變更", type="primary", use_container_width=True):
             has_changes = False
             for idx, changes in st.session_state.edited_rows.items():
@@ -382,77 +464,6 @@ elif menu == "📂 資料管理中心":
             else:
                 st.info("沒有偵測到任何變更。")
 
-        st.divider()
-
-        for phone_num, group_data in grouped_df:
-            first_row = group_data.iloc[0]
-            parent_name = first_row['家長稱呼']
-            
-            with st.expander(f"👤 {parent_name} | 📞 {phone_num} (共 {len(group_data)} 位幼兒)"):
-                for idx, row in group_data.iterrows():
-                    status_color = "tag-yellow"
-                    # [修改] 狀態對應顏色更新
-                    if "已安排" in str(row['報名狀態']): status_color = "tag-green"
-                    elif "考慮" in str(row['報名狀態']): status_color = "tag-blue"
-                    
-                    child_name_display = row['幼兒姓名'] if row['幼兒姓名'] else "(未填姓名)"
-                    
-                    st.markdown(f"""
-                    <div class="child-info-block">
-                        <div style="display:flex; justify-content:space-between; align-items:center;">
-                            <span style="font-size:1.1em; font-weight:bold; color:#333;">👶 {child_name_display}</span>
-                            <span class="card-tag {status_color}">{row['報名狀態']}</span>
-                        </div>
-                        <div style="color:#666; font-size:0.9em; margin-top:5px;">
-                            🎂 生日：{row['幼兒生日']} | 🏫 {row['預計入學資訊']}
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
-                    c1, c2 = st.columns([1, 1])
-                    
-                    def update_value(i, c, k):
-                        if i not in st.session_state.edited_rows:
-                            st.session_state.edited_rows[i] = {}
-                        st.session_state.edited_rows[i][c] = st.session_state[k]
-
-                    k_contact = f"contact_{idx}"
-                    st.checkbox("已聯繫", value=row['已聯繫'], key=k_contact, on_change=update_value, args=(idx, '已聯繫', k_contact))
-                    
-                    k_status = f"status_{idx}"
-                    # [修改] 狀態選單更新
-                    status_opts = ["排隊中", "已安排", "考慮中"]
-                    
-                    # 處理舊資料相容性 (如果舊資料是排隊候補，自動對應到排隊中)
-                    curr_val = row['報名狀態']
-                    if curr_val == "排隊候補": curr_val = "排隊中"
-                    if "已確認" in curr_val: curr_val = "已安排"
-                    if curr_val not in status_opts: status_opts.insert(0, curr_val)
-                        
-                    curr_status_idx = status_opts.index(curr_val)
-                    st.selectbox("報名狀態", status_opts, index=curr_status_idx, key=k_status, on_change=update_value, args=(idx, '報名狀態', k_status))
-                    
-                    k_grade = f"grade_{idx}"
-                    current_plan = row['預計入學資訊']
-                    try:
-                        dob_parts = str(row['幼兒生日']).split('/')
-                        dob_obj = date(int(dob_parts[0])+1911, int(dob_parts[1]), int(dob_parts[2]))
-                        possible_plans = calculate_admission_roadmap(dob_obj)
-                    except:
-                        possible_plans = [current_plan, "無法計算/日期錯誤"]
-                    if current_plan not in possible_plans: possible_plans.insert(0, current_plan)
-                    
-                    st.selectbox("入學年段", possible_plans, index=possible_plans.index(current_plan), key=k_grade, on_change=update_value, args=(idx, '預計入學資訊', k_grade))
-                    
-                    k_note = f"note_{idx}"
-                    st.text_area("備註", value=row['備註'], height=68, key=k_note, on_change=update_value, args=(idx, '備註', k_note))
-
-                    if st.button("🗑️ 刪除此幼兒", key=f"del_btn_{idx}"):
-                        df = df.drop(idx)
-                        if sync_data_to_gsheets(df):
-                            st.success("✅ 刪除成功！")
-                            st.rerun()
-                    st.divider()
     else:
         st.info("目前無資料。")
 
@@ -467,7 +478,6 @@ elif menu == "📅 未來入學預覽":
     st.divider()
 
     if not df.empty:
-        # [新增] 全園已安排總表 (容器)
         confirmed_list = []
         roster = {"托嬰中心": [], "幼幼班": [], "小班": [], "中班": [], "大班": []}
         stats = {"total": 0, "confirmed": 0, "contacted": 0}
@@ -478,7 +488,6 @@ elif menu == "📅 未來入學預覽":
                 dob_obj = date(int(dob_parts[0])+1911, int(dob_parts[1]), int(dob_parts[2]))
                 grade = get_grade_for_year(dob_obj, search_year)
                 
-                # 判定邏輯：只要狀態包含 "已安排" 或 "已確認"，就加入總表
                 status_text = str(row['報名狀態'])
                 is_confirmed = "已安排" in status_text or "已確認" in status_text or "繳費" in status_text
                 
@@ -487,7 +496,6 @@ elif menu == "📅 未來入學預覽":
                     if row['已聯繫']: stats['contacted'] += 1
                     if is_confirmed: 
                         stats['confirmed'] += 1
-                        # 加入總表
                         confirmed_list.append({
                             "班級": grade,
                             "家長": row['家長稱呼'],
@@ -511,7 +519,6 @@ elif menu == "📅 未來入學預覽":
         c3.metric("聯絡進度", f"{int(stats['contacted']/stats['total']*100)}%" if stats['total']>0 else "0%")
         st.progress(stats['contacted']/stats['total'] if stats['total']>0 else 0)
         
-        # [新增] 顯示已安排學生總表
         if confirmed_list:
             with st.expander(f"📋 {search_year} 學年度 - 已安排入學名單總表 ({len(confirmed_list)}人)", expanded=True):
                 st.dataframe(pd.DataFrame(confirmed_list), use_container_width=True)
@@ -568,7 +575,6 @@ elif menu == "👩‍🏫 師資人力預估":
 
     df_current = load_current_students() 
     df_new = load_registered_data()
-    # [修改] 預設狀態改名
     if not df_new.empty and '報名狀態' not in df_new.columns: df_new['報名狀態'] = '排隊中'
 
     today = date.today()
@@ -603,7 +609,6 @@ elif menu == "👩‍🏫 師資人力預估":
                         grade = get_grade_for_year(dob_obj, year)
                         target_grade = grade if grade in confirmed_counts else None
                         if target_grade:
-                            # [修改] 判定條件更新
                             if "已安排" in status or "已確認" in status: confirmed_counts[target_grade] += 1
                             else: waitlist_counts[target_grade] += 1
                     except: pass
