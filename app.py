@@ -289,22 +289,51 @@ if menu == "👶 新生報名管理":
         else:
             st.info("尚未加入任何幼兒資料。請填寫上方資料並按下「加入暫存清單」。")
 
-    # --- Tab 2: 快速查詢 ---
+    # --- Tab 2: 快速查詢 (更新版) ---
     with tab2:
         st.subheader("🔍 快速查詢報名資料")
         st.caption("輸入電話、家長姓名或幼兒姓名，確認資料是否已建立。")
         keyword = st.text_input("請輸入關鍵字", placeholder="例如：0912345678 或 陳大寶")
+        
         if keyword:
             if not df.empty:
+                # 搜尋邏輯
                 mask = df.astype(str).apply(lambda x: x.str.contains(keyword, case=False)).any(axis=1)
                 result_df = df[mask]
+                
                 if not result_df.empty:
                     st.success(f"✅ 找到 {len(result_df)} 筆資料：")
+                    
                     show_cols = ['報名狀態', '幼兒姓名', '家長稱呼', '電話', '預計入學資訊', '備註']
                     valid_cols = [c for c in show_cols if c in result_df.columns]
                     st.dataframe(result_df[valid_cols], use_container_width=True)
+                    
+                    st.divider()
+                    
+                    # [新增] 查詢結果刪除功能
+                    with st.expander("🗑️ 刪除查詢結果中的資料 (慎用)"):
+                        # 使用 result_df 的 index 來產生選項，確保對應到原始資料
+                        del_options = result_df.apply(
+                            lambda x: f"#{x.name+1} | {x['家長稱呼']} | {x['幼兒姓名']} ({x['電話']})", 
+                            axis=1
+                        ).tolist()
+                        
+                        delete_list_search = st.multiselect("請勾選要刪除的資料", del_options)
+                        
+                        if delete_list_search:
+                            if st.button("確認刪除勾選資料", type="primary"):
+                                full_df = df.copy()
+                                # 解析要刪除的 index
+                                indices_to_drop = [int(item.split("|")[0].replace("#", "").strip()) - 1 for item in delete_list_search]
+                                
+                                final_df = full_df.drop(indices_to_drop)
+                                
+                                if sync_data_to_gsheets(final_df):
+                                    st.success("✅ 資料已刪除！")
+                                    load_registered_data.clear()
+                                    st.rerun()
                 else:
-                    st.warning("❌ 查無資料，請確認關鍵字是否正確，或前往「新增報名」頁籤建立資料。")
+                    st.warning("❌ 查無資料，請確認關鍵字是否正確。")
             else:
                 st.info("目前資料庫是空的。")
         else:
@@ -396,7 +425,6 @@ if menu == "👶 新生報名管理":
                     grade = get_grade_for_year(dob_obj, search_year)
                     if grade in roster:
                         status_icon = "🟢" if "已確認" in row['報名狀態'] else "🟡"
-                        # [修正] 移除 '幼兒姓名' 欄位，只保留家長資訊
                         roster[grade].append({
                             "狀態": f"{status_icon} {row['報名狀態']}",
                             "家長": row['家長稱呼'],
