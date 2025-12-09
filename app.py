@@ -183,4 +183,35 @@ elif menu == "師資需求計算":
     # 2. 設定參數
     col1, col2 = st.columns(2)
     with col1:
-        ratio_normal = st.number_input("大/中/小班 師生比", min_value=1, value=15, help="通常
+        ratio_normal = st.number_input("大/中/小班 師生比", min_value=1, value=15, help="通常為 1:15")
+    with col2:
+        ratio_toddler = st.number_input("幼幼班 師生比", min_value=1, value=8, help="通常為 1:8")
+
+    # 3. 計算並顯示
+    results = []
+    
+    # 定義每個班級對應的師生比
+    class_config = [
+        ('大班', ratio_normal),
+        ('中班', ratio_normal),
+        ('小班', ratio_normal),
+        ('幼幼班', ratio_toddler)
+    ]
+
+    total_teachers = 0
+
+    for grade, ratio in class_config:
+        num = counts.get(grade, 0)
+        teachers = math.ceil(num / ratio) if num > 0 else 0
+        total_teachers += teachers
+        
+        results.append({
+            "班級": grade,
+            "目前學生數": num,
+            "設定師生比": f"1 : {ratio}",
+            "所需老師": teachers
+        })
+    
+    st.table(pd.DataFrame(results))
+    
+    st.info(f"🏆 全園總計需要： **{total_teachers}** 位老師")
