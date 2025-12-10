@@ -320,7 +320,7 @@ elif menu == "📂 資料管理中心":
                 if sync_data_to_gsheets(fulldf):
                     st.success("儲存成功"); st.session_state.edited_rows={}; time.sleep(1); st.rerun()
 
-# --- 頁面 3: 未來預覽 ---
+# --- 頁面 3: 未來預覽 (修正版) ---
 elif menu == "📅 未來入學預覽":
     st.header("📅 未來入學名單預覽")
     cur_y = date.today().year - 1911
@@ -329,6 +329,7 @@ elif menu == "📅 未來入學預覽":
     st.divider()
 
     if not df.empty:
+        # 資料分類
         roster = {k: {"conf": [], "pend": []} for k in ["托嬰中心", "幼幼班", "小班", "中班", "大班"]}
         stats = {"tot": 0, "conf": 0, "pend": 0}
         
@@ -413,22 +414,21 @@ elif menu == "📅 未來入學預覽":
                 sort_map = {"大班":0, "中班":1, "小班":2, "幼幼班":3, "托嬰中心":4}
                 c_all_df['sort'] = c_all_df['班級'].map(sort_map)
                 c_all_df = c_all_df.sort_values('sort').drop(columns=['sort'])
-                st.dataframe(c_all_df[['班級', '幼兒姓名', '家長稱呼', '電話', '備註']], hide_index=True, use_container_width=True)
+                # [修正] 這裡隱藏幼兒姓名
+                st.dataframe(c_all_df[['班級', '家長稱呼', '電話', '備註']], hide_index=True, use_container_width=True)
              else:
                 st.info("目前尚未安排任何學生。")
 
         st.markdown("---")
 
         # 🏆 核心視圖：分班看板 (已安排)
-        st.subheader(f"🏆 {search_y} 學年度 - 確定入學榜單 (分班檢視)")
-        
-        # 這裡修改了欄位：[家長稱呼, 電話, 備註]
+        st.subheader(f"🏆 {search_y} 學年度 - 確定入學榜單")
         col_l, col_m, col_s = st.columns(3)
         def render_board(column, title, data):
             with column:
                 st.markdown(f"##### {title} ({len(data)}人)")
                 if data:
-                    # [修改] 顯示欄位：家長稱呼、電話、備註
+                    # [修正] 看板中隱藏幼兒姓名
                     disp_df = pd.DataFrame(data)[['家長稱呼', '電話', '備註']]
                     st.dataframe(disp_df, hide_index=True, use_container_width=True)
                 else: st.info("尚無名單")
@@ -479,13 +479,24 @@ elif menu == "📅 未來入學預覽":
                             if chg and sync_data_to_gsheets(fulldf):
                                 st.success("更新成功"); time.sleep(0.5); st.rerun()
 
-# --- 頁面 4: 師資預估 ---
+# --- 頁面 4: 師資預估 (修正：法規 1:12 邏輯) ---
 elif menu == "👩‍🏫 師資人力預估":
     st.header("📊 師資人力預估")
-    r_d = st.number_input("托嬰 (0-2歲) 1:", 5)
-    r_t = st.number_input("幼幼 (2-3歲) 1:", 8)
-    r_k = st.number_input("小中大 (3-6歲) 1:", 15)
-    cal_y = st.number_input("預估學年", date.today().year - 1911 + 1)
+    
+    # 1. 先選學年 (影響預設值)
+    cal_y = st.number_input("預估學年", value=date.today().year - 1911 + 1)
+    
+    # 2. 自動判斷法規預設值 (115學年起強制 1:12)
+    default_ratio = 12 if cal_y >= 115 else 15
+    if cal_y >= 115:
+        st.caption("ℹ️ 依據法規，115學年度起準公共幼兒園師生比應調整為 **1:12**。")
+
+    # 3. 參數設定 (使用智慧預設值)
+    with st.expander("⚙️ 師生比參數設定", expanded=True):
+        c1, c2, c3 = st.columns(3)
+        r_d = c1.number_input("托嬰 (0-2歲) 1:", 5)
+        r_t = c2.number_input("幼幼 (2-3歲) 1:", 8)
+        r_k = c3.number_input("小中大 (3-6歲) 1:", value=default_ratio)
     
     cts = {k: {"c": 0, "w": 0} for k in ["托嬰中心", "幼幼班", "小班", "中班", "大班"]}
     for _, r in df.iterrows():
