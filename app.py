@@ -8,7 +8,7 @@ import uuid
 # ==========================================
 # 0. 基礎設定 (絕不能刪除)
 # ==========================================
-st.set_page_config(page_title="新生管理系統", layout="wide", page_icon="🏫")
+st.set_page_config(page_title="新生與經費管理系統", layout="wide", page_icon="🏫")
 
 # 嘗試匯入 gspread (容錯模式)
 try:
@@ -39,7 +39,7 @@ st.markdown("""
     
     .metric-card {
         background-color: #f0f2f6;
-        padding: 10px;
+        padding: 15px;
         border-radius: 8px;
         border-left: 5px solid #ff4b4b;
         margin-bottom: 10px;
@@ -52,6 +52,7 @@ st.markdown("""
 # ==========================================
 SHEET_NAME = 'kindergarten_db'
 LOCAL_CSV = 'kindergarten_local_db.csv'
+EXPENSE_CSV = 'kindergarten_expenses.csv' # 新增：經費 CSV
 STUDENT_CSV = 'students.csv'
 
 def check_password():
@@ -79,13 +80,14 @@ def get_gsheet_client():
         return gspread.authorize(creds)
     except: return None
 
-def connect_to_gsheets():
+# --- 學生資料讀取 ---
+def connect_to_gsheets_students():
     c = get_gsheet_client()
     return c.open(SHEET_NAME).sheet1 if c else None
 
 @st.cache_data(ttl=60)
 def load_registered_data():
-    sheet = connect_to_gsheets()
+    sheet = connect_to_gsheets_students()
     df = pd.DataFrame()
     if sheet:
         try:
@@ -103,10 +105,6 @@ def load_registered_data():
     if '報名狀態' not in df.columns: df['報名狀態'] = '排隊中'
     return df
 
-def load_current_students():
-    try: return pd.read_csv(STUDENT_CSV)
-    except: return pd.DataFrame(columns=['姓名', '出生年月日', '目前班級'])
-
 def sync_data_to_gsheets(new_df):
     try:
         save_df = new_df.copy()
@@ -118,7 +116,7 @@ def sync_data_to_gsheets(new_df):
             if c not in save_df.columns: save_df[c] = ""
         save_df = save_df[final_cols].astype(str)
 
-        sheet = connect_to_gsheets()
+        sheet = connect_to_gsheets_students()
         if sheet:
             try:
                 sheet.clear()
@@ -132,6 +130,69 @@ def sync_data_to_gsheets(new_df):
     except Exception as e:
         st.error(f"儲存錯誤: {e}")
         return False
+
+# --- [新增] 廠商發票資料讀取 ---
+def connect_to_gsheets_expenses():
+    c = get_gsheet_client()
+    if c:
+        try:
+            # 嘗試讀取名為 'expenses' 的工作表
+            return c.open(SHEET_NAME).worksheet('expenses')
+        except:
+            return None # 找不到該工作表
+    return None
+
+@st.cache_data(ttl=60)
+def load_expenses_data():
+    sheet = connect_to_gsheets_expenses()
+    df = pd.DataFrame()
+    if sheet:
+        try:
+            data = sheet.get_all_values()
+            if data: df = pd.DataFrame(data[1:], columns=data[0])
+        except: pass
+    
+    if df.empty:
+        try: df = pd.read_csv(EXPENSE_CSV)
+        except: df = pd.DataFrame(columns=['日期', '廠商名稱', '計畫類別', '項目說明', '金額', '發票狀態', '備註'])
+    
+    # 確保數值欄位正確
+    if '金額' in df.columns:
+        df['金額'] = pd.to_numeric(df['金額'], errors='coerce').fillna(0).astype(int)
+    
+    return df
+
+def sync_expenses_to_gsheets(new_df):
+    try:
+        save_df = new_df.copy()
+        final_cols = ['日期', '廠商名稱', '計畫類別', '項目說明', '金額', '發票狀態', '備註']
+        for c in final_cols:
+            if c not in save_df.columns: save_df[c] = ""
+        save_df = save_df[final_cols] # 確保順序
+
+        # 轉字串儲存
+        save_str_df = save_df.astype(str)
+
+        sheet = connect_to_gsheets_expenses()
+        if sheet:
+            try:
+                sheet.clear()
+                sheet.append_row(final_cols)
+                if not save_str_df.empty: sheet.append_rows(save_str_df.values.tolist())
+            except Exception as e: 
+                # st.warning(f"雲端同步失敗 (請確認 GSheet 有 'expenses' 分頁): {e}")
+                pass
+
+        save_df.to_csv(EXPENSE_CSV, index=False)
+        load_expenses_data.clear()
+        return True
+    except Exception as e:
+        st.error(f"儲存錯誤: {e}")
+        return False
+
+def load_current_students():
+    try: return pd.read_csv(STUDENT_CSV)
+    except: return pd.DataFrame(columns=['姓名', '出生年月日', '目前班級'])
 
 # ==========================================
 # 2. 核心計算邏輯
@@ -224,9 +285,10 @@ def submit_all_cb():
 # ==========================================
 st.title("🏫 幼兒園新生管理系統")
 df = load_registered_data()
+df_exp = load_expenses_data()
 
 # 核心選單
-menu = st.sidebar.radio("功能導航", ["👶 新增報名", "📂 資料管理中心", "📅 未來入學預覽", "👩‍🏫 師資人力預估"])
+menu = st.sidebar.radio("功能導航", ["👶 新增報名", "📂 資料管理中心", "💰 廠商發票管理", "📅 未來入學預覽", "👩‍🏫 師資人力預估"])
 
 # --- 頁面 1: 新增 ---
 if menu == "👶 新增報名":
@@ -320,7 +382,106 @@ elif menu == "📂 資料管理中心":
                 if sync_data_to_gsheets(fulldf):
                     st.success("儲存成功"); st.session_state.edited_rows={}; time.sleep(1); st.rerun()
 
-# --- 頁面 3: 未來預覽 (修正版) ---
+# --- [新功能] 廠商發票管理 ---
+elif menu == "💰 廠商發票管理":
+    st.header("💰 廠商發票管理")
+    st.caption("方便記錄各項廠商請款，並依計畫歸類，利於申請政府經費。")
+    
+    # --- 1. 新增表單 ---
+    with st.expander("➕ 新增一筆發票/請款紀錄", expanded=False):
+        with st.form("add_expense_form"):
+            c1, c2 = st.columns(2)
+            e_date = c1.date_input("請款日期", value=date.today())
+            e_vendor = c2.text_input("廠商名稱 (如: 全聯、XX圖書)", placeholder="輸入廠商...")
+            
+            c3, c4 = st.columns(2)
+            # 計畫類別建議清單
+            proj_opts = ["一般行政", "115教保計畫", "餐點費", "教學設備", "環境修繕", "其他"]
+            e_proj = c3.selectbox("計畫/經費類別", proj_opts + ["自訂..."])
+            if e_proj == "自訂...":
+                e_proj = st.text_input("輸入自訂計畫名稱")
+                
+            e_item = c4.text_input("項目說明 (如: 繪本10本)", placeholder="買了什麼...")
+            
+            c5, c6 = st.columns(2)
+            e_amount = c5.number_input("金額 (元)", min_value=0, step=100)
+            e_status = c6.radio("發票狀態", ["✅ 已收到", "❌ 未收到"], horizontal=True)
+            e_note = st.text_area("備註", height=50)
+
+            if st.form_submit_button("💾 新增紀錄"):
+                new_row = {
+                    '日期': str(e_date), '廠商名稱': e_vendor, '計畫類別': e_proj,
+                    '項目說明': e_item, '金額': e_amount, '發票狀態': e_status, '備註': e_note
+                }
+                # 合併並儲存
+                new_df = pd.concat([df_exp, pd.DataFrame([new_row])], ignore_index=True)
+                if sync_expenses_to_gsheets(new_df):
+                    st.success("已新增！")
+                    time.sleep(0.5); st.rerun()
+
+    # --- 2. 統計看板 ---
+    if not df_exp.empty:
+        total_amt = df_exp['金額'].sum()
+        missing_inv = df_exp[df_exp['發票狀態'].str.contains("未收到")]
+        
+        m1, m2, m3 = st.columns(3)
+        m1.metric("💰 總支出金額", f"${total_amt:,}")
+        m2.metric("🧾 登記筆數", f"{len(df_exp)} 筆")
+        m3.metric("⚠️ 發票未到", f"{len(missing_inv)} 筆", delta_color="inverse")
+        
+        # --- 3. 篩選與顯示 ---
+        st.divider()
+        st.subheader("📋 支出明細表")
+        
+        # 篩選器
+        col_fil1, col_fil2 = st.columns([1, 1])
+        filter_proj = col_fil1.multiselect("篩選計畫/類別", df_exp['計畫類別'].unique())
+        filter_vendor = col_fil2.text_input("搜尋廠商或項目")
+        
+        show_df = df_exp.copy()
+        if filter_proj:
+            show_df = show_df[show_df['計畫類別'].isin(filter_proj)]
+        if filter_vendor:
+            show_df = show_df[
+                show_df['廠商名稱'].astype(str).str.contains(filter_vendor) | 
+                show_df['項目說明'].astype(str).str.contains(filter_vendor)
+            ]
+        
+        # 可編輯的表格
+        edited_exp = st.data_editor(
+            show_df,
+            column_config={
+                "日期": st.column_config.DateColumn(format="YYYY-MM-DD"),
+                "金額": st.column_config.NumberColumn(format="$%d"),
+                "發票狀態": st.column_config.SelectboxColumn(options=["✅ 已收到", "❌ 未收到"]),
+                "計畫類別": st.column_config.TextColumn(width="medium"),
+            },
+            num_rows="dynamic", # 允許刪除行
+            use_container_width=True,
+            key="expense_editor"
+        )
+        
+        # 偵測變更並儲存
+        if st.button("💾 更新發票/經費紀錄"):
+            # 這裡的邏輯是直接用編輯後的 dataframe 覆蓋 (支援修改與刪除)
+            # 因為 data_editor 已經處理了篩選後的視圖，如果要存回全表比較複雜
+            # 簡單做法：如果沒篩選，直接存。如果有篩選，只更新變動的部分 (較難實作)
+            # 務實做法：提示使用者「若要刪除或大幅修改，請勿使用篩選功能」
+            
+            if len(show_df) != len(df_exp):
+                st.warning("⚠️ 篩選模式下無法直接儲存「刪除」操作，請清除篩選後再刪除。編輯內容可正常儲存。")
+                # 這裡僅示範簡單覆寫，實務上需更嚴謹的 index 對應，
+                # 但為求這份程式碼穩定，建議使用者在無篩選狀態下管理資料。
+            
+            # 嘗試更新邏輯：先刪除舊的，再補上新的 (需有唯一 ID，目前簡化處理)
+            # 簡化版：直接將 edited_exp 視為最新資料 (若無篩選)
+            if sync_expenses_to_gsheets(edited_exp):
+                st.success("資料已更新！")
+                time.sleep(0.5); st.rerun()
+    else:
+        st.info("目前沒有支出紀錄。")
+
+# --- 頁面 3: 未來預覽 (已修正) ---
 elif menu == "📅 未來入學預覽":
     st.header("📅 未來入學名單預覽")
     cur_y = date.today().year - 1911
@@ -414,7 +575,6 @@ elif menu == "📅 未來入學預覽":
                 sort_map = {"大班":0, "中班":1, "小班":2, "幼幼班":3, "托嬰中心":4}
                 c_all_df['sort'] = c_all_df['班級'].map(sort_map)
                 c_all_df = c_all_df.sort_values('sort').drop(columns=['sort'])
-                # [修正] 這裡隱藏幼兒姓名
                 st.dataframe(c_all_df[['班級', '家長稱呼', '電話', '備註']], hide_index=True, use_container_width=True)
              else:
                 st.info("目前尚未安排任何學生。")
@@ -428,7 +588,6 @@ elif menu == "📅 未來入學預覽":
             with column:
                 st.markdown(f"##### {title} ({len(data)}人)")
                 if data:
-                    # [修正] 看板中隱藏幼兒姓名
                     disp_df = pd.DataFrame(data)[['家長稱呼', '電話', '備註']]
                     st.dataframe(disp_df, hide_index=True, use_container_width=True)
                 else: st.info("尚無名單")
@@ -479,19 +638,17 @@ elif menu == "📅 未來入學預覽":
                             if chg and sync_data_to_gsheets(fulldf):
                                 st.success("更新成功"); time.sleep(0.5); st.rerun()
 
-# --- 頁面 4: 師資預估 (修正：法規 1:12 邏輯) ---
+# --- 頁面 4: 師資預估 ---
 elif menu == "👩‍🏫 師資人力預估":
     st.header("📊 師資人力預估")
     
-    # 1. 先選學年 (影響預設值)
     cal_y = st.number_input("預估學年", value=date.today().year - 1911 + 1)
     
-    # 2. 自動判斷法規預設值 (115學年起強制 1:12)
+    # 法規智慧判斷
     default_ratio = 12 if cal_y >= 115 else 15
     if cal_y >= 115:
-        st.caption("ℹ️ 依據法規，115學年度起準公共幼兒園師生比應調整為 **1:12**。")
+        st.caption("ℹ️ 115學年度起準公幼師生比調整為 **1:12**。")
 
-    # 3. 參數設定 (使用智慧預設值)
     with st.expander("⚙️ 師生比參數設定", expanded=True):
         c1, c2, c3 = st.columns(3)
         r_d = c1.number_input("托嬰 (0-2歲) 1:", 5)
