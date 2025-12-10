@@ -1,4 +1,13 @@
-# --- 頁面 2: 資料管理中心 ---
+# --- 確保這一行在最上面 ---
+menu = st.sidebar.radio("功能導航", ["👶 新增報名", "📂 資料管理中心", "📅 未來入學預覽", "👩‍🏫 師資人力預估"])
+
+# --- 頁面 1: 新增報名 (必須是 if) ---
+if menu == "👶 新增報名":
+    st.markdown("### 📝 新生報名登記")
+    # ... (保留您原本新增報名的程式碼) ...
+    # 如果您這裡原本是空的或被覆蓋了，請告訴我，我補給您
+
+# --- 頁面 2: 資料管理中心 (這裡是 elif) ---
 elif menu == "📂 資料管理中心":
     st.markdown("### 📂 資料管理中心")
     
@@ -22,9 +31,8 @@ elif menu == "📂 資料管理中心":
 
         tab_todo, tab_done, tab_all = st.tabs(["📞 待聯繫名單", "✅ 已聯繫名單 (含入學設定)", "📋 全部資料"])
 
-        # --- 定義：統計儀表板函數 (新增功能) ---
+        # --- 定義：統計儀表板函數 ---
         def show_admission_summary(source_df):
-            # 篩選出「已聯繫」且狀態為「已安排」或「已確認」的學生
             confirmed_df = source_df[
                 (source_df['聯繫狀態'] == '已聯繫') & 
                 (source_df['報名狀態'].astype(str).str.contains('已安排|已確認'))
@@ -33,12 +41,10 @@ elif menu == "📂 資料管理中心":
             if confirmed_df.empty:
                 st.info("ℹ️ 目前尚無「已聯繫」且「已安排」入學的學生。")
             else:
-                # 依照「預計入學資訊」分組統計
                 summary = confirmed_df.groupby('預計入學資訊').size().reset_index(name='已安排人數')
                 summary = summary.sort_values('預計入學資訊')
                 
                 st.markdown("#### 📊 目前已安排入學人數統計")
-                # 轉換成橫向顯示或較美觀的 dataframe
                 st.dataframe(
                     summary.style.background_gradient(cmap="Blues"), 
                     use_container_width=True,
@@ -47,11 +53,10 @@ elif menu == "📂 資料管理中心":
                 st.caption("※ 此統計僅包含「已聯繫」且狀態為「已安排/已確認」的學生。")
                 st.divider()
 
-        # --- 定義：顯示列表函數 (修改功能：加入入學年段編輯) ---
+        # --- 定義：顯示列表函數 ---
         def render_student_list(target_df, tab_key_suffix, show_summary=False):
             if show_summary:
-                # 在列表上方顯示統計
-                show_admission_summary(df) # 傳入完整的 df 以進行全局統計
+                show_admission_summary(df)
 
             if target_df.empty:
                 st.info("此區塊目前無資料。")
@@ -77,7 +82,6 @@ elif menu == "📂 資料管理中心":
                         
                         child_name = row['幼兒姓名'] if row['幼兒姓名'] else "(未填姓名)"
 
-                        # 顯示基本資訊
                         st.markdown(f"""
                         <div class="child-info-block">
                             <div style="display:flex; justify-content:space-between; align-items:center;">
@@ -90,32 +94,25 @@ elif menu == "📂 資料管理中心":
                         </div>
                         """, unsafe_allow_html=True)
                         
-                        # --- 編輯區塊開始 ---
                         c1, c2 = st.columns([1, 1])
                         
-                        # 定義更新 Callback
                         def update_state(oid=orig_idx, k_con=f"c_{unique_key}", k_sta=f"s_{unique_key}", k_plan=f"p_{unique_key}", k_note=f"n_{unique_key}"):
                             if oid not in st.session_state.edited_rows:
                                 st.session_state.edited_rows[oid] = {}
-                            
                             st.session_state.edited_rows[oid]['聯繫狀態'] = "已聯繫" if st.session_state[k_con] else "未聯繫"
                             st.session_state.edited_rows[oid]['報名狀態'] = st.session_state[k_sta]
-                            st.session_state.edited_rows[oid]['預計入學資訊'] = st.session_state[k_plan] # 新增這一行
+                            st.session_state.edited_rows[oid]['預計入學資訊'] = st.session_state[k_plan]
                             st.session_state.edited_rows[oid]['備註'] = st.session_state[k_note]
 
-                        # 1. 已聯繫 Checkbox
                         with c1:
                             is_con = st.checkbox("已聯繫", value=row['is_contacted'], key=f"c_{unique_key}", on_change=update_state)
                         
-                        # 2. 報名狀態 Selectbox
                         with c2:
                             status_opts = ["排隊中", "已安排", "考慮中", "放棄", "超齡/畢業"]
                             curr_val = row['報名狀態']
                             if curr_val not in status_opts: status_opts.insert(0, curr_val)
                             st.selectbox("報名狀態", status_opts, index=status_opts.index(curr_val), key=f"s_{unique_key}", on_change=update_state, label_visibility="collapsed")
 
-                        # 3. [新增] 預計入學資訊 Selectbox
-                        # 計算合理的入學選項
                         try:
                             dob_parts = str(row['幼兒生日']).split('/')
                             dob_obj = date(int(dob_parts[0])+1911, int(dob_parts[1]), int(dob_parts[2]))
@@ -126,13 +123,11 @@ elif menu == "📂 資料管理中心":
                         curr_plan = str(row['預計入學資訊'])
                         if curr_plan not in plan_opts: plan_opts.insert(0, curr_plan)
                         
-                        st.write("📅 **預計就讀年段** (修改後請按下方儲存)")
+                        st.write("📅 **預計就讀年段**")
                         st.selectbox("預計就讀年段", plan_opts, index=plan_opts.index(curr_plan), key=f"p_{unique_key}", on_change=update_state)
 
-                        # 4. 備註 Textarea
                         st.text_area("備註", value=row['備註'], height=68, key=f"n_{unique_key}", on_change=update_state)
 
-                        # 刪除按鈕
                         if st.button("🗑️ 刪除此幼兒", key=f"del_{unique_key}"):
                             new_df = df.drop(orig_idx)
                             if sync_data_to_gsheets(new_df):
@@ -146,17 +141,14 @@ elif menu == "📂 資料管理中心":
             render_student_list(display_df[display_df['is_contacted'] == False], "todo")
 
         with tab_done:
-            # 這裡開啟 show_summary=True，讓使用者一進來就看到統計
             st.success("✅ 這裡顯示 **已經聯繫過** 的家長，可編輯「預計就讀年段」。")
             render_student_list(display_df[display_df['is_contacted'] == True], "done", show_summary=True)
 
         with tab_all:
             render_student_list(display_df, "all")
         
-        # 底部儲存按鈕
         st.write("")
         st.markdown("---")
-        # 這裡做一個浮動效果或醒目提示
         col_save_1, col_save_2 = st.columns([1, 2])
         with col_save_2:
             if st.button("💾 儲存所有變更 (更新統計數據)", type="primary", use_container_width=True):
@@ -177,3 +169,8 @@ elif menu == "📂 資料管理中心":
 
     else:
         st.info("目前無資料。")
+
+# --- 頁面 3 ---
+elif menu == "📅 未來入學預覽":
+    # ... (您的頁面 3 程式碼) ...
+    pass
