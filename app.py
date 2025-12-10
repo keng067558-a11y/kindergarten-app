@@ -312,17 +312,18 @@ elif menu == "📂 資料管理中心":
                 if sync_data_to_gsheets(fulldf):
                     st.success("儲存成功"); st.session_state.edited_rows={}; time.sleep(1); st.rerun()
 
-# --- 頁面 3: 未來預覽 (修復：名單顯示與跳動問題) ---
+# --- 頁面 3: 未來預覽 (修正：加入全校總表 + 修復跳動) ---
 elif menu == "📅 未來入學預覽":
     st.header("📅 未來入學名單預覽")
     cur_y = date.today().year - 1911
     search_y = st.number_input("查詢學年", value=cur_y+1, min_value=cur_y)
-    st.caption(f"💡 系統會依據生日自動推算孩子在 {search_y} 學年的班級")
+    st.caption(f"💡 系統會依據生日自動推算孩子在 {search_y} 學年的班級，方便您提早規劃。")
     st.divider()
 
     if not df.empty:
         roster = {k: {"conf": [], "pend": []} for k in ["托嬰中心", "幼幼班", "小班", "中班", "大班"]}
         stats = {"tot": 0, "conf": 0, "pend": 0}
+        master_list = [] # 全校總表資料
 
         for idx, row in df.iterrows():
             try:
@@ -345,6 +346,18 @@ elif menu == "📅 未來入學預覽":
                 if grade in roster and not is_drop:
                     stats['tot'] += 1
                     item = row.to_dict(); item['idx'] = idx
+                    
+                    # 準備總表資料
+                    master_row = {
+                        "班級": grade,
+                        "狀態": "✅ 已安排" if is_conf else "⏳ 待確認",
+                        "幼兒姓名": row['幼兒姓名'],
+                        "家長": row['家長稱呼'],
+                        "電話": row['電話'],
+                        "備註": row['備註']
+                    }
+                    master_list.append(master_row)
+
                     if is_conf:
                         stats['conf'] += 1
                         roster[grade]["conf"].append(item)
@@ -357,16 +370,39 @@ elif menu == "📅 未來入學預覽":
         c1.metric("✅ 已安排", stats['conf'])
         c2.metric("⏳ 待確認", stats['pend'])
         c3.metric("📋 總符合", stats['tot'])
+
+        # --- [新增功能] 全校入學總表 (一眼看清) ---
+        if master_list:
+            st.markdown(f"#### 📋 {search_y} 學年度 - 入學總名單 (全校一覽)")
+            # 依照班級排序 (托嬰 -> 大班)
+            sort_order = {"托嬰中心": 0, "幼幼班": 1, "小班": 2, "中班": 3, "大班": 4}
+            master_df = pd.DataFrame(master_list)
+            master_df['sort_key'] = master_df['班級'].map(sort_order)
+            master_df = master_df.sort_values('sort_key').drop(columns=['sort_key'])
+            
+            st.dataframe(
+                master_df,
+                column_config={
+                    "狀態": st.column_config.TextColumn(width="small"),
+                    "班級": st.column_config.TextColumn(width="small"),
+                    "備註": st.column_config.TextColumn(width="large"),
+                },
+                hide_index=True,
+                use_container_width=True
+            )
+        else:
+            st.info("該學年度目前沒有符合資格的學生。")
+
         st.divider()
+        st.subheader("🔽 各班級詳細操作區")
 
         for g in ["托嬰中心", "幼幼班", "小班", "中班", "大班"]:
             cf = roster[g]["conf"]
             pd_list = roster[g]["pend"]
             
-            # 使用表單 (Form) 來避免每次勾選都刷新頁面 (解決跳動問題)
             with st.expander(f"📍 {g} (已安排: {len(cf)} / 待確認: {len(pd_list)})", expanded=(len(cf)+len(pd_list)>0)):
                 
-                # 1. 已安排區塊 (加回幼兒姓名以利辨識，但無法修改)
+                # 1. 已安排區塊
                 if cf:
                     st.markdown(f"**✅ 已安排 ({len(cf)})**")
                     st.dataframe(
@@ -375,12 +411,11 @@ elif menu == "📅 未來入學預覽":
                         use_container_width=True
                     )
                 
-                # 2. 待確認區塊 (可編輯)
+                # 2. 待確認區塊 (表單模式，防止跳動)
                 if pd_list:
                     if cf: st.divider()
                     st.markdown(f"**⏳ 待確認 ({len(pd_list)})**")
                     
-                    # 🚀 關鍵修正：將 Data Editor 放入 Form 中，防止勾選時畫面跳動
                     with st.form(key=f"form_{g}"):
                         pdf = pd.DataFrame(pd_list)
                         pdf['已聯繫'] = pdf['聯繫狀態'] == '已聯繫'
@@ -393,7 +428,7 @@ elif menu == "📅 未來入學預覽":
                                 "聯繫狀態": None,
                                 "已聯繫": st.column_config.CheckboxColumn(width="small"),
                                 "報名狀態": st.column_config.SelectboxColumn(options=["排隊中", "已安排", "考慮中", "放棄"], width="medium"),
-                                "幼兒姓名": st.column_config.TextColumn(disabled=True), # 唯讀方便辨識
+                                "幼兒姓名": st.column_config.TextColumn(disabled=True),
                                 "家長稱呼": st.column_config.TextColumn(disabled=True),
                                 "電話": st.column_config.TextColumn(disabled=True),
                                 "備註": st.column_config.TextColumn(width="large"),
@@ -403,8 +438,8 @@ elif menu == "📅 未來入學預覽":
                             key=f"ed_{g}"
                         )
                         
-                        # 表單提交按鈕
-                        if st.form_submit_button(f"💾 確認更新 {g}"):
+                        # 按下此按鈕才會提交並刷新
+                        if st.form_submit_button(f"💾 確認更新 {g} 狀態"):
                             fulldf = load_registered_data()
                             chg = False
                             for i, r in edited.iterrows():
