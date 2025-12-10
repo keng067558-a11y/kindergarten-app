@@ -37,7 +37,6 @@ st.markdown("""
     .tag-blue { background-color: #17a2b8; }
     div.stButton > button { border-radius: 8px; font-weight: bold; }
     
-    /* 針對看板模式的優化 */
     .metric-card {
         background-color: #f0f2f6;
         padding: 10px;
@@ -321,7 +320,7 @@ elif menu == "📂 資料管理中心":
                 if sync_data_to_gsheets(fulldf):
                     st.success("儲存成功"); st.session_state.edited_rows={}; time.sleep(1); st.rerun()
 
-# --- 頁面 3: 未來預覽 (重構：看板模式) ---
+# --- 頁面 3: 未來預覽 (新功能：全校總表展開) ---
 elif menu == "📅 未來入學預覽":
     st.header("📅 未來入學名單預覽")
     cur_y = date.today().year - 1911
@@ -333,6 +332,10 @@ elif menu == "📅 未來入學預覽":
         # 資料分類
         roster = {k: {"conf": [], "pend": []} for k in ["托嬰中心", "幼幼班", "小班", "中班", "大班"]}
         stats = {"tot": 0, "conf": 0, "pend": 0}
+        
+        # [NEW] 建立全校總清單
+        all_pending_list = []
+        all_confirmed_list = []
 
         for idx, row in df.iterrows():
             try:
@@ -352,13 +355,16 @@ elif menu == "📅 未來入學預覽":
 
                 if grade in roster and not is_drop:
                     stats['tot'] += 1
-                    item = row.to_dict(); item['idx'] = idx
+                    item = row.to_dict(); item['idx'] = idx; item['班級'] = grade # 加上班級
+                    
                     if is_conf:
                         stats['conf'] += 1
                         roster[grade]["conf"].append(item)
+                        all_confirmed_list.append(item)
                     else:
                         stats['pend'] += 1
                         roster[grade]["pend"].append(item)
+                        all_pending_list.append(item)
             except: pass
 
         # 頂部儀表板
@@ -366,42 +372,86 @@ elif menu == "📅 未來入學預覽":
         c1.metric("✅ 全校已安排", stats['conf'])
         c2.metric("⏳ 全校待確認", stats['pend'])
         c3.metric("📋 總符合人數", stats['tot'])
+        
+        # [NEW] 全校總表展開區 (放在數字下方)
+        with st.expander(f"📋 查看全校【待確認】總表 (共{len(all_pending_list)}人) - 可直接編輯", expanded=False):
+            if all_pending_list:
+                p_all_df = pd.DataFrame(all_pending_list)
+                p_all_df['已聯繫'] = p_all_df['聯繫狀態'] == '已聯繫'
+                
+                # 全校待確認編輯器
+                with st.form("master_pending_form"):
+                    edited_master = st.data_editor(
+                        p_all_df,
+                        column_order=['班級', '已聯繫', '報名狀態', '幼兒姓名', '家長稱呼', '電話', '備註'],
+                        column_config={
+                            "idx": None,
+                            "聯繫狀態": None,
+                            "班級": st.column_config.TextColumn(width="small", disabled=True),
+                            "已聯繫": st.column_config.CheckboxColumn(width="small"),
+                            "報名狀態": st.column_config.SelectboxColumn(options=["排隊中", "已安排", "考慮中", "放棄"], width="medium"),
+                            "幼兒姓名": st.column_config.TextColumn(disabled=True),
+                            "家長稱呼": st.column_config.TextColumn(disabled=True),
+                            "電話": st.column_config.TextColumn(disabled=True),
+                            "備註": st.column_config.TextColumn(width="large"),
+                        },
+                        hide_index=True, use_container_width=True
+                    )
+                    if st.form_submit_button("💾 儲存待確認清單變更"):
+                        fulldf = load_registered_data()
+                        chg = False
+                        for i, r in edited_master.iterrows():
+                            oid = r['idx']
+                            ncon = "已聯繫" if r['已聯繫'] else "未聯繫"
+                            if fulldf.at[oid, '聯繫狀態']!=ncon: fulldf.at[oid, '聯繫狀態']=ncon; chg=True
+                            if fulldf.at[oid, '報名狀態']!=r['報名狀態']: fulldf.at[oid, '報名狀態']=r['報名狀態']; chg=True
+                            if fulldf.at[oid, '備註']!=r['備註']: fulldf.at[oid, '備註']=r['備註']; chg=True
+                        if chg and sync_data_to_gsheets(fulldf):
+                            st.success("更新成功"); time.sleep(0.5); st.rerun()
+            else:
+                st.info("目前沒有待確認的學生。")
+
+        with st.expander(f"📋 查看全校【已安排】總表 (共{len(all_confirmed_list)}人)", expanded=False):
+             if all_confirmed_list:
+                c_all_df = pd.DataFrame(all_confirmed_list)
+                # 依照班級排序 (大班->托嬰)
+                sort_map = {"大班":0, "中班":1, "小班":2, "幼幼班":3, "托嬰中心":4}
+                c_all_df['sort'] = c_all_df['班級'].map(sort_map)
+                c_all_df = c_all_df.sort_values('sort').drop(columns=['sort'])
+                
+                st.dataframe(
+                    c_all_df[['班級', '幼兒姓名', '家長稱呼', '電話', '備註']],
+                    hide_index=True, use_container_width=True
+                )
+             else:
+                st.info("目前尚未安排任何學生。")
+
         st.markdown("---")
 
-        # 🏆 核心視圖：分班看板 (只顯示已安排，一眼看清)
-        st.subheader(f"🏆 {search_y} 學年度 - 確定入學榜單")
-        
-        # 第一排：大中小班
+        # 🏆 核心視圖：分班看板 (已安排)
+        st.subheader(f"🏆 {search_y} 學年度 - 確定入學榜單 (分班檢視)")
         col_l, col_m, col_s = st.columns(3)
-        
         def render_board(column, title, data):
             with column:
                 st.markdown(f"##### {title} ({len(data)}人)")
                 if data:
-                    # 簡化顯示，只顯示關鍵資訊
                     disp_df = pd.DataFrame(data)[['幼兒姓名', '家長稱呼', '備註']]
                     st.dataframe(disp_df, hide_index=True, use_container_width=True)
-                else:
-                    st.info("尚無名單")
+                else: st.info("尚無名單")
 
         render_board(col_l, "🐘 大班", roster["大班"]["conf"])
         render_board(col_m, "🦁 中班", roster["中班"]["conf"])
         render_board(col_s, "🐰 小班", roster["小班"]["conf"])
-        
-        st.write("") # 間隔
-        
-        # 第二排：幼幼與托嬰
+        st.write("") 
         col_t, col_d, col_x = st.columns(3)
         render_board(col_t, "🐥 幼幼班", roster["幼幼班"]["conf"])
         render_board(col_d, "🍼 托嬰中心", roster["托嬰中心"]["conf"])
-        with col_x: st.write("") # 佔位
+        with col_x: st.write("")
 
         st.divider()
 
-        # 🔽 待確認名單 (工作區)
-        with st.expander("🔽 點此展開「待確認 / 排隊中」名單 (供行政聯絡使用)", expanded=False):
-            st.info("此處為符合年齡但**尚未確認**入學的學生。勾選確認並儲存後，會自動移至上方榜單。")
-            
+        # 🔽 待確認名單 (保留原有分班細節)
+        with st.expander("🔽 點此展開各班級詳細「待確認」名單 (分班操作)", expanded=False):
             for g in ["大班", "中班", "小班", "幼幼班", "托嬰中心"]:
                 pend_list = roster[g]["pend"]
                 if pend_list:
@@ -409,13 +459,11 @@ elif menu == "📅 未來入學預覽":
                     with st.form(key=f"f_{g}"):
                         pdf = pd.DataFrame(pend_list)
                         pdf['已聯繫'] = pdf['聯繫狀態'] == '已聯繫'
-                        
                         edited = st.data_editor(
                             pdf,
                             column_order=['已聯繫', '報名狀態', '幼兒姓名', '家長稱呼', '電話', '備註'],
                             column_config={
-                                "idx": None,
-                                "聯繫狀態": None,
+                                "idx": None, "聯繫狀態": None,
                                 "已聯繫": st.column_config.CheckboxColumn(width="small"),
                                 "報名狀態": st.column_config.SelectboxColumn(options=["排隊中", "已安排", "考慮中", "放棄"], width="medium"),
                                 "幼兒姓名": st.column_config.TextColumn(disabled=True),
@@ -434,7 +482,6 @@ elif menu == "📅 未來入學預覽":
                                 if fulldf.at[oid, '聯繫狀態']!=ncon: fulldf.at[oid, '聯繫狀態']=ncon; chg=True
                                 if fulldf.at[oid, '報名狀態']!=r['報名狀態']: fulldf.at[oid, '報名狀態']=r['報名狀態']; chg=True
                                 if fulldf.at[oid, '備註']!=r['備註']: fulldf.at[oid, '備註']=r['備註']; chg=True
-                            
                             if chg and sync_data_to_gsheets(fulldf):
                                 st.success("更新成功"); time.sleep(0.5); st.rerun()
 
