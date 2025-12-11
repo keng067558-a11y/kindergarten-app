@@ -330,6 +330,7 @@ elif menu == "📂 資料管理中心":
                 return False 
             
             prio_opts = ["優", "中", "差"]
+            counter = 1 # [新增] 編號計數器
             
             # 這裡使用 sort=False 避免 pandas 重新排序，節省一點點計算時間
             for ph, gp in tdf.groupby('電話', sort=False):
@@ -344,11 +345,13 @@ elif menu == "📂 資料管理中心":
                 plan_str = str(row_data['預計入學資訊'])
                 grade_show = plan_str.split(" - ")[-1] if " - " in plan_str else (plan_str if plan_str and plan_str != "nan" else "未定")
                 
-                # [修改] 不再截斷備註，直接顯示完整內容
+                # 不截斷備註，直接顯示完整內容
                 raw_note = str(row_data['備註']).strip()
                 note_str = f" | 📝 {raw_note}" if raw_note else ""
                 
-                expander_title = f"{prio_icon} 【{grade_show}】 {row_data['家長稱呼']} | 📞 {ph}{note_str}"
+                # [新增] 在標題最前面加入編號 {counter}.
+                expander_title = f"{counter}. {prio_icon} 【{grade_show}】 {row_data['家長稱呼']} | 📞 {ph}{note_str}"
+                counter += 1
                 
                 with st.expander(expander_title):
                     for _, r in gp.iterrows():
@@ -365,10 +368,8 @@ elif menu == "📂 資料管理中心":
                         c2.selectbox("狀態", opts, index=opts.index(val), key=f"s_{uk}")
 
                         c3, c4 = st.columns([1, 1])
-                        # 簡化計算邏輯：如果預計入學資訊已有值，就不重新計算生日，節省效能
                         plans = [str(r['預計入學資訊'])]
                         try:
-                            # 只有當使用者點開下拉選單想改的時候，我們才假設他可能需要重新計算
                             dob = date(int(str(r['幼兒生日']).split('/')[0])+1911, int(str(r['幼兒生日']).split('/')[1]), int(str(r['幼兒生日']).split('/')[2]))
                             plans = calculate_admission_roadmap(dob)
                             if str(r['預計入學資訊']) not in plans: plans.insert(0, str(r['預計入學資訊']))
@@ -378,17 +379,27 @@ elif menu == "📂 資料管理中心":
                         c4.selectbox("優先等級", prio_opts, index=prio_opts.index(curr_prio), key=f"imp_{uk}")
 
                         st.text_area("備註內容", r['備註'], key=f"n_{uk}", height=80, placeholder="備註...")
-                        st.divider()
+                        
+                        # [新增] 刪除勾選框
+                        st.markdown("---")
+                        st.checkbox("🗑️ 刪除此筆資料 (勾選後按下方「儲存」生效)", key=f"del_{uk}")
             return True
 
         def process_save(tdf, key_pfx):
             with st.spinner("正在更新資料庫..."):
                 fulldf = load_registered_data()
                 changes_made = False
+                indices_to_drop = [] # 用來記錄要刪除的列索引
                 
                 for _, r in tdf.iterrows():
                     oid = r['original_index']
                     uk = f"{key_pfx}_{oid}"
+                    
+                    # [新增] 檢查是否勾選刪除
+                    if st.session_state.get(f"del_{uk}"):
+                        indices_to_drop.append(oid)
+                        changes_made = True
+                        continue # 如果要刪除，就不用處理更新了
                     
                     # 讀取 Session State
                     new_contact = st.session_state.get(f"c_{uk}")
@@ -414,10 +425,13 @@ elif menu == "📂 資料管理中心":
                     if new_imp is not None and fulldf.at[oid, '重要性'] != new_imp:
                         fulldf.at[oid, '重要性'] = new_imp; changes_made = True
 
+                # [新增] 執行刪除動作
+                if indices_to_drop:
+                    fulldf = fulldf.drop(indices_to_drop)
+
                 if changes_made:
                     if sync_data_to_gsheets(fulldf):
-                        # [優化] 使用 toast 替代 success + sleep + rerun
-                        st.toast("✅ 資料已批次更新！", icon="💾")
+                        st.toast("✅ 資料已批次更新/刪除！", icon="💾")
                         st.rerun() # 立即重整顯示最新狀態
                 else:
                     st.toast("沒有偵測到變更", icon="ℹ️")
