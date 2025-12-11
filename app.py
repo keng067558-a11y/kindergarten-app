@@ -2,8 +2,6 @@ import streamlit as st
 import pandas as pd
 from datetime import date, datetime
 import math
-# 移除 time 模組的依賴，不再需要人工等待
-# import time 
 
 # ==========================================
 # 0. 基礎設定 (系統核心)
@@ -29,9 +27,7 @@ st.markdown("""
 <style>
     .stApp { font-family: "Microsoft JhengHei", sans-serif; }
     .streamlit-expanderHeader { background-color: #f8f9fa; border: 1px solid #eee; font-weight: bold; color: #333; }
-    /* 優化讀取時的轉場體驗 */
     .stSpinner { margin-top: 20px; }
-    /* 強調目前年段的顯示 */
     .big-grade { font-size: 2em; font-weight: bold; color: #ff4b4b; }
 </style>
 """, unsafe_allow_html=True)
@@ -73,7 +69,6 @@ def connect_to_gsheets_students():
     c = get_gsheet_client()
     return c.open(SHEET_NAME).sheet1 if c else None
 
-# [優化] 將 TTL 從 60 延長至 300 (5分鐘)，減少不必要的網路讀取
 @st.cache_data(ttl=300)
 def load_registered_data():
     sheet = connect_to_gsheets_students()
@@ -117,7 +112,7 @@ def sync_data_to_gsheets(new_df):
             except: pass 
 
         save_df.to_csv(LOCAL_CSV, index=False)
-        load_registered_data.clear() # 清除快取，確保下次讀取是新的
+        load_registered_data.clear() 
         return True
     except Exception as e:
         st.error(f"儲存錯誤: {e}")
@@ -131,7 +126,6 @@ def connect_to_gsheets_expenses():
         except: return None
     return None
 
-# [優化] 將 TTL 從 60 延長至 300
 @st.cache_data(ttl=300)
 def load_expenses_data():
     sheet = connect_to_gsheets_expenses()
@@ -218,12 +212,11 @@ def calculate_admission_roadmap(dob):
 # 3. 頁面邏輯 (狀態與Callback)
 # ==========================================
 if 'temp_children' not in st.session_state: st.session_state.temp_children = []
-
-# [優化] 改用 st.toast，所以不需要 msg_success 這種需要等待的狀態變數
 if 'msg_error' not in st.session_state: st.session_state['msg_error'] = None
+
 if st.session_state['msg_error']: 
     st.error(st.session_state['msg_error'])
-    st.session_state['msg_error']=None
+    st.session_state['msg_error'] = None
 
 def add_child_cb():
     y, m, d = st.session_state.get("y_add", 112), st.session_state.get("m_add", 1), st.session_state.get("d_add", 1)
@@ -233,12 +226,11 @@ def add_child_cb():
     st.session_state.temp_children.append({
         "幼兒姓名": st.session_state.get("input_c_name", "") or "(未填)",
         "幼兒生日": to_roc_str(dob),
-        "報名狀態": "排隊中",
+        "報名狀態": "預約參觀", # 預設改為預約參觀
         "預計入學資訊": plans[0] if plans else "待確認",
         "備註": st.session_state.get("input_note", ""),
         "重要性": "中"
     })
-    # 清空欄位
     st.session_state.input_c_name = ""
     st.session_state.input_note = ""
 
@@ -247,7 +239,6 @@ def submit_all_cb():
     p_name, phone = st.session_state.input_p_name, st.session_state.input_phone
     if not p_name or not phone: st.session_state['msg_error'] = "❌ 家長與電話必填"; return
     
-    # 顯示轉圈圈，讓使用者知道正在處理
     with st.spinner('正在雲端儲存中...'):
         cur_df = load_registered_data()
         rows = []
@@ -259,7 +250,6 @@ def submit_all_cb():
                 '推薦人': st.session_state.input_referrer, '備註': c['備註'], '重要性': c['重要性']
             })
         if sync_data_to_gsheets(pd.concat([cur_df, pd.DataFrame(rows)], ignore_index=True)):
-            # [優化] 使用 toast 替代 success + sleep
             st.toast(f"✅ 成功新增 {len(rows)} 筆資料", icon="🎉")
             st.session_state.temp_children = []
             st.session_state.input_p_name = ""
@@ -270,7 +260,6 @@ def submit_all_cb():
 # ==========================================
 st.title("🏫 幼兒園新生管理系統")
 
-# 使用 spinner 包裹讀取過程
 with st.spinner("載入資料庫..."):
     df = load_registered_data()
     df_exp = load_expenses_data()
@@ -302,7 +291,6 @@ if menu == "👶 新增報名":
             if st.button("❌ 移除", key=f"rm_{i}"): 
                 st.session_state.temp_children.pop(i)
                 st.rerun()
-        # 按下後會觸發 submit_all_cb (內含 toast)
         st.button("✅ 確認送出", type="primary", on_click=submit_all_cb, use_container_width=True)
 
 # --- 頁面 2: 資料管理 ---
@@ -327,10 +315,6 @@ elif menu == "📂 資料管理中心":
         t1, t2, t3 = st.tabs(["待聯繫", "已聯繫", "全部"])
 
         def render_cards_in_form(tdf, key_pfx):
-            if tdf.empty: 
-                st.caption("無資料")
-                return False 
-            
             prio_opts = ["優", "中", "差"]
             counter = 1 
             
@@ -339,7 +323,6 @@ elif menu == "📂 資料管理中心":
                 curr_prio = row_data.get('重要性', '中')
                 if curr_prio not in prio_opts: curr_prio = "中"
                 
-                # 視覺化邏輯
                 icon_map = {"優": "🔴", "中": "🟡", "差": "⚪"}
                 prio_icon = icon_map.get(curr_prio, "⚪")
 
@@ -362,9 +345,9 @@ elif menu == "📂 資料管理中心":
                         c1, c2 = st.columns([1, 1])
                         c1.checkbox("已聯繫", r['is_contacted'], key=f"c_{uk}")
                         
-                        # [新增狀態] 預約參觀
+                        # [狀態選單] 加入預約參觀
                         opts = ["預約參觀", "排隊中", "確認入學", "已安排", "考慮中", "放棄", "超齡/畢業"]
-                        val = r['報名狀態'] if r['報名狀態'] in opts else opts[1] # Default fall back to 排隊中
+                        val = r['報名狀態'] if r['報名狀態'] in opts else "排隊中"
                         c2.selectbox("狀態", opts, index=opts.index(val), key=f"s_{uk}")
 
                         c3, c4 = st.columns([1, 1])
@@ -379,10 +362,8 @@ elif menu == "📂 資料管理中心":
                         c4.selectbox("優先等級", prio_opts, index=prio_opts.index(curr_prio), key=f"imp_{uk}")
 
                         st.text_area("備註內容", r['備註'], key=f"n_{uk}", height=80, placeholder="備註...")
-                        
                         st.markdown("---")
                         st.checkbox("🗑️ 刪除此筆資料 (勾選後按下方「儲存」生效)", key=f"del_{uk}")
-            return True
 
         def process_save(tdf, key_pfx):
             with st.spinner("正在更新資料庫..."):
@@ -432,27 +413,33 @@ elif menu == "📂 資料管理中心":
                     st.toast("沒有偵測到變更", icon="ℹ️")
 
         with t1:
-            with st.form("form_t1"):
-                has_data = render_cards_in_form(disp[~disp['is_contacted']], "t1")
-                if has_data:
-                    if st.form_submit_button("💾 儲存本頁變更", type="primary", use_container_width=True):
-                        process_save(disp[~disp['is_contacted']], "t1")
+            # 修正：檢查是否有資料，避免建立空表單導致錯誤
+            target_data = disp[~disp['is_contacted']]
+            if not target_data.empty:
+                with st.form("form_t1"):
+                    render_cards_in_form(target_data, "t1")
+                    st.form_submit_button("💾 儲存本頁變更", type="primary", use_container_width=True, on_click=lambda: process_save(target_data, "t1"))
+            else:
+                st.info("目前沒有待聯繫的資料。")
 
         with t2:
-            with st.form("form_t2"):
-                has_data = render_cards_in_form(disp[disp['is_contacted']], "t2")
-                if has_data:
-                    if st.form_submit_button("💾 儲存本頁變更", type="primary", use_container_width=True):
-                        process_save(disp[disp['is_contacted']], "t2")
+            target_data = disp[disp['is_contacted']]
+            if not target_data.empty:
+                with st.form("form_t2"):
+                    render_cards_in_form(target_data, "t2")
+                    st.form_submit_button("💾 儲存本頁變更", type="primary", use_container_width=True, on_click=lambda: process_save(target_data, "t2"))
+            else:
+                st.info("目前沒有已聯繫的資料。")
 
         with t3:
-            with st.form("form_t3"):
-                has_data = render_cards_in_form(disp, "t3")
-                if has_data:
-                    if st.form_submit_button("💾 儲存本頁變更", type="primary", use_container_width=True):
-                        process_save(disp, "t3")
+            if not disp.empty:
+                with st.form("form_t3"):
+                    render_cards_in_form(disp, "t3")
+                    st.form_submit_button("💾 儲存本頁變更", type="primary", use_container_width=True, on_click=lambda: process_save(disp, "t3"))
+            else:
+                st.info("目前沒有任何資料。")
 
-# --- 頁面 2.5: 學年快速查詢 (NEW) ---
+# --- 頁面 2.5: 學年快速查詢 ---
 elif menu == "🎓 學年快速查詢":
     st.header("🎓 學年段快速查詢")
     st.caption("輸入出生年月日，立即查看該生目前的學齡與未來入學規劃，無需建立資料。")
@@ -463,11 +450,8 @@ elif menu == "🎓 學年快速查詢":
         st.divider()
         roadmap = calculate_admission_roadmap(dob)
         
-        # 顯示當前狀態
         st.subheader(f"👶 這位小朋友目前是：")
         current_status = roadmap[0] if roadmap else "年齡不符"
-        
-        # 解析顯示字串
         grade_display = current_status.split(" - ")[-1] if " - " in current_status else current_status
         year_display = current_status.split(" - ")[0] if " - " in current_status else "目前"
         
@@ -489,7 +473,6 @@ elif menu == "🎓 學年快速查詢":
 # --- 頁面 3: 廠商發票管理 ---
 elif menu == "💰 廠商發票管理":
     st.header("💰 廠商發票管理")
-    st.caption("方便記錄各項廠商請款，並依計畫歸類，利於申請政府經費。")
     
     with st.expander("➕ 新增一筆發票/請款紀錄", expanded=False):
         with st.form("add_expense_form"):
@@ -557,13 +540,10 @@ elif menu == "💰 廠商發票管理":
         )
         
         if st.button("💾 更新發票/經費紀錄"):
-            if len(show_df) != len(df_exp):
-                st.warning("⚠️ 篩選模式下無法直接儲存「刪除」操作，請清除篩選後再刪除。")
-            else:
-                with st.spinner("更新中..."):
-                    if sync_expenses_to_gsheets(edited_exp):
-                        st.toast("資料已更新！", icon="✅")
-                        st.rerun()
+            with st.spinner("更新中..."):
+                if sync_expenses_to_gsheets(edited_exp):
+                    st.toast("資料已更新！", icon="✅")
+                    st.rerun()
 
 # --- 頁面 4: 未來預覽 ---
 elif menu == "📅 未來入學預覽":
@@ -623,7 +603,7 @@ elif menu == "📅 未來入學預覽":
                             "idx": None, "聯繫狀態": None,
                             "班級": st.column_config.TextColumn(width="small", disabled=True),
                             "已聯繫": st.column_config.CheckboxColumn(width="small"),
-                            # [新增狀態] 預約參觀
+                            # [狀態選單] 這裡也加入預約參觀
                             "報名狀態": st.column_config.SelectboxColumn(options=["預約參觀", "排隊中", "確認入學", "已安排", "考慮中", "放棄"], width="medium"),
                             "幼兒姓名": st.column_config.TextColumn(disabled=True),
                             "家長稱呼": st.column_config.TextColumn(disabled=True),
