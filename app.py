@@ -29,7 +29,7 @@ except ImportError:
 st.markdown("""
 <style>
     .stApp { font-family: "Microsoft JhengHei", sans-serif; }
-    .streamlit-expanderHeader { background-color: #f8f9fa; border: 1px solid #eee; }
+    .streamlit-expanderHeader { background-color: #f8f9fa; border: 1px solid #eee; font-weight: bold; color: #333; }
     .metric-card {
         background-color: #f0f2f6;
         padding: 15px;
@@ -323,16 +323,22 @@ elif menu == "📂 資料管理中心":
             for ph, gp in tdf.groupby('電話'):
                 row_data = gp.iloc[0]
                 
-                # 重要性邏輯
+                # 視覺邏輯：重要性與備註
                 curr_prio = row_data.get('重要性', '🟢 普通')
                 if curr_prio not in prio_opts: curr_prio = "🟢 普通"
                 icon = curr_prio.split(" ")[0]
                 
-                # 備註顯示邏輯
-                has_note = len(str(row_data['備註']).strip()) > 0
-                note_icon = "📝" if has_note else ""
+                # --- 修改重點：將備註直接顯示在標題上 ---
+                raw_note = str(row_data['備註']).strip()
+                if raw_note:
+                    # 如果備註太長，只顯示前 15 個字
+                    short_note = raw_note[:15] + "..." if len(raw_note) > 15 else raw_note
+                    note_str = f" | 📝 {short_note}"
+                else:
+                    note_str = ""
                 
-                expander_title = f"{icon} {row_data['家長稱呼']} | 📞 {ph} {note_icon}"
+                # 組合標題
+                expander_title = f"{icon} {row_data['家長稱呼']} | 📞 {ph}{note_str}"
                 
                 with st.expander(expander_title):
                     for _, r in gp.iterrows():
@@ -367,7 +373,7 @@ elif menu == "📂 資料管理中心":
                         c3.selectbox("預計年段", plans, index=plans.index(plan_val), key=f"p_{uk}", on_change=upd)
                         c4.selectbox("優先等級", prio_opts, index=prio_opts.index(curr_prio), key=f"imp_{uk}", on_change=upd)
 
-                        st.caption("備註事項：")
+                        st.caption("備註事項 (編輯後請按儲存，標題會自動更新)：")
                         st.text_area("備註內容", r['備註'], key=f"n_{uk}", height=80, on_change=upd, placeholder="例如：要在下午兩點後聯繫、對花生過敏...")
                         
                         if st.button("🗑️ 刪除此筆", key=f"del_{uk}"):
