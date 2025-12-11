@@ -83,6 +83,9 @@ def load_registered_data():
         try: df = pd.read_csv(LOCAL_CSV)
         except: df = pd.DataFrame(columns=['報名狀態', '聯繫狀態', '登記日期', '幼兒姓名', '家長稱呼', '電話', '幼兒生日', '預計入學資訊', '推薦人', '備註', '重要性'])
 
+    # [修正] 預處理：將所有 NaN 填充為空字串，避免比對時出現 nan != "" 的問題
+    df = df.fillna("")
+
     if '電話' in df.columns:
         df['電話'] = df['電話'].astype(str).str.strip().apply(lambda x: '0' + x if len(x) == 9 and x.startswith('9') else x)
     if '聯繫狀態' not in df.columns: df['聯繫狀態'] = '未聯繫'
@@ -140,6 +143,8 @@ def load_expenses_data():
         try: df = pd.read_csv(EXPENSE_CSV)
         except: df = pd.DataFrame(columns=['日期', '廠商名稱', '計畫類別', '項目說明', '金額', '發票狀態', '備註'])
     
+    df = df.fillna("") # [修正] 預處理空值
+
     if '金額' in df.columns:
         df['金額'] = pd.to_numeric(df['金額'], errors='coerce').fillna(0).astype(int)
     return df
@@ -327,9 +332,11 @@ elif menu == "📂 資料管理中心":
                 prio_icon = icon_map.get(curr_prio, "⚪")
 
                 plan_str = str(row_data['預計入學資訊'])
-                grade_show = plan_str.split(" - ")[-1] if " - " in plan_str else (plan_str if plan_str and plan_str != "nan" else "未定")
+                if plan_str == 'nan': plan_str = ""
+                grade_show = plan_str.split(" - ")[-1] if " - " in plan_str else (plan_str if plan_str else "未定")
                 
                 raw_note = str(row_data['備註']).strip()
+                if raw_note == 'nan': raw_note = ""
                 note_str = f" | 📝 {raw_note}" if raw_note else ""
                 
                 expander_title = f"{counter}. {prio_icon} 【{grade_show}】 {row_data['家長稱呼']} | 📞 {ph}{note_str}"
@@ -345,23 +352,29 @@ elif menu == "📂 資料管理中心":
                         c1, c2 = st.columns([1, 1])
                         c1.checkbox("已聯繫", r['is_contacted'], key=f"c_{uk}")
                         
-                        # [狀態選單] 
                         opts = ["預約參觀", "排隊中", "確認入學", "已安排", "考慮中", "放棄", "超齡/畢業"]
                         val = r['報名狀態'] if r['報名狀態'] in opts else "排隊中"
                         c2.selectbox("狀態", opts, index=opts.index(val), key=f"s_{uk}")
 
                         c3, c4 = st.columns([1, 1])
-                        plans = [str(r['預計入學資訊'])]
+                        curr_plan = str(r['預計入學資訊'])
+                        if curr_plan == 'nan': curr_plan = ""
+                        plans = [curr_plan]
+                        
                         try:
                             dob = date(int(str(r['幼兒生日']).split('/')[0])+1911, int(str(r['幼兒生日']).split('/')[1]), int(str(r['幼兒生日']).split('/')[2]))
                             plans = calculate_admission_roadmap(dob)
-                            if str(r['預計入學資訊']) not in plans: plans.insert(0, str(r['預計入學資訊']))
+                            if curr_plan and curr_plan not in plans: plans.insert(0, curr_plan)
                         except: pass
-
-                        c3.selectbox("預計年段", plans, index=0 if str(r['預計入學資訊']) == plans[0] else 0, key=f"p_{uk}")
+                        
+                        # 確保選單預設值正確
+                        idx = 0
+                        if curr_plan in plans: idx = plans.index(curr_plan)
+                        c3.selectbox("預計年段", plans, index=idx, key=f"p_{uk}")
+                        
                         c4.selectbox("優先等級", prio_opts, index=prio_opts.index(curr_prio), key=f"imp_{uk}")
 
-                        st.text_area("備註內容", r['備註'], key=f"n_{uk}", height=80, placeholder="備註...")
+                        st.text_area("備註內容", r['備註'] if str(r['備註'])!='nan' else "", key=f"n_{uk}", height=80, placeholder="備註...")
                         st.markdown("---")
                         st.checkbox("🗑️ 刪除此筆資料 (勾選後按下方「儲存」生效)", key=f"del_{uk}")
 
@@ -386,21 +399,32 @@ elif menu == "📂 資料管理中心":
                     new_note = st.session_state.get(f"n_{uk}")
                     new_imp = st.session_state.get(f"imp_{uk}")
                     
+                    # [修正] 嚴格的比對邏輯：轉字串、去空白、處理 nan
+                    def strict_val(v):
+                        s = str(v).strip()
+                        return "" if s == 'nan' else s
+
                     if new_contact is not None:
                         ncon_str = "已聯繫" if new_contact else "未聯繫"
-                        if fulldf.at[oid, '聯繫狀態'] != ncon_str: fulldf.at[oid, '聯繫狀態'] = ncon_str; changes_made = True
+                        if strict_val(fulldf.at[oid, '聯繫狀態']) != strict_val(ncon_str):
+                             fulldf.at[oid, '聯繫狀態'] = ncon_str; changes_made = True
                     
-                    if new_status is not None and fulldf.at[oid, '報名狀態'] != new_status:
-                        fulldf.at[oid, '報名狀態'] = new_status; changes_made = True
+                    if new_status is not None:
+                        if strict_val(fulldf.at[oid, '報名狀態']) != strict_val(new_status):
+                            fulldf.at[oid, '報名狀態'] = new_status; changes_made = True
                         
-                    if new_plan is not None and fulldf.at[oid, '預計入學資訊'] != new_plan:
-                        fulldf.at[oid, '預計入學資訊'] = new_plan; changes_made = True
+                    if new_plan is not None:
+                        # 這是您遇到問題的地方，這裡加強了比對
+                        if strict_val(fulldf.at[oid, '預計入學資訊']) != strict_val(new_plan):
+                            fulldf.at[oid, '預計入學資訊'] = new_plan; changes_made = True
                         
-                    if new_note is not None and fulldf.at[oid, '備註'] != new_note:
-                        fulldf.at[oid, '備註'] = new_note; changes_made = True
+                    if new_note is not None:
+                        if strict_val(fulldf.at[oid, '備註']) != strict_val(new_note):
+                            fulldf.at[oid, '備註'] = new_note; changes_made = True
                         
-                    if new_imp is not None and fulldf.at[oid, '重要性'] != new_imp:
-                        fulldf.at[oid, '重要性'] = new_imp; changes_made = True
+                    if new_imp is not None:
+                        if strict_val(fulldf.at[oid, '重要性']) != strict_val(new_imp):
+                            fulldf.at[oid, '重要性'] = new_imp; changes_made = True
 
                 if indices_to_drop:
                     fulldf = fulldf.drop(indices_to_drop)
@@ -417,7 +441,6 @@ elif menu == "📂 資料管理中心":
             if not target_data.empty:
                 with st.form("form_t1"):
                     render_cards_in_form(target_data, "t1")
-                    # [修正] 改回使用 if 判斷，避免 callback rerun 錯誤
                     if st.form_submit_button("💾 儲存本頁變更", type="primary", use_container_width=True):
                         process_save(target_data, "t1")
             else:
@@ -428,7 +451,6 @@ elif menu == "📂 資料管理中心":
             if not target_data.empty:
                 with st.form("form_t2"):
                     render_cards_in_form(target_data, "t2")
-                    # [修正] 改回使用 if 判斷
                     if st.form_submit_button("💾 儲存本頁變更", type="primary", use_container_width=True):
                         process_save(target_data, "t2")
             else:
@@ -438,7 +460,6 @@ elif menu == "📂 資料管理中心":
             if not disp.empty:
                 with st.form("form_t3"):
                     render_cards_in_form(disp, "t3")
-                    # [修正] 改回使用 if 判斷
                     if st.form_submit_button("💾 儲存本頁變更", type="primary", use_container_width=True):
                         process_save(disp, "t3")
             else:
