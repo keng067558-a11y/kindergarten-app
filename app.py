@@ -328,10 +328,9 @@ elif menu == "📂 資料管理中心":
                 if curr_prio not in prio_opts: curr_prio = "🟢 普通"
                 icon = curr_prio.split(" ")[0]
                 
-                # --- 修改重點：將備註直接顯示在標題上 ---
+                # 備註顯示
                 raw_note = str(row_data['備註']).strip()
                 if raw_note:
-                    # 如果備註太長，只顯示前 15 個字
                     short_note = raw_note[:15] + "..." if len(raw_note) > 15 else raw_note
                     note_str = f" | 📝 {short_note}"
                 else:
@@ -358,7 +357,11 @@ elif menu == "📂 資料管理中心":
                             st.session_state.edited_rows[idx]['重要性'] = st.session_state[f"imp_{k}"]
 
                         c1.checkbox("已聯繫", r['is_contacted'], key=f"c_{uk}", on_change=upd)
-                        opts = ["排隊中", "已安排", "考慮中", "放棄", "超齡/畢業"]
+                        
+                        # ==========================================
+                        # UPDATE: 更新狀態選項，加入「確認入學」
+                        # ==========================================
+                        opts = ["排隊中", "確認入學", "已安排", "考慮中", "放棄", "超齡/畢業"]
                         val = r['報名狀態'] if r['報名狀態'] in opts else opts[0]
                         c2.selectbox("狀態", opts, index=opts.index(val), key=f"s_{uk}", on_change=upd)
 
@@ -495,7 +498,12 @@ elif menu == "📅 未來入學預覽":
                     grade = get_grade_for_year(dob, search_y)
 
                 status = str(row['報名狀態'])
-                is_conf = "已安排" in status or "已確認" in status
+                
+                # ==========================================
+                # UPDATE: 嚴格定義「確認入學」
+                # ==========================================
+                # 只有 "確認入學" 才會被視為確認，"已安排" 會被歸類到排隊/待確認中
+                is_conf = "確認入學" in status
                 is_drop = "放棄" in status
 
                 if grade in roster and not is_drop:
@@ -513,8 +521,8 @@ elif menu == "📅 未來入學預覽":
             except: pass
 
         c1, c2, c3 = st.columns(3)
-        c1.metric("✅ 全校已安排", stats['conf'])
-        c2.metric("⏳ 全校待確認", stats['pend'])
+        c1.metric("✅ 確定入學", stats['conf']) # 文字修改：更精確
+        c2.metric("⏳ 潛在/排隊", stats['pend'])
         c3.metric("📋 總符合人數", stats['tot'])
         
         with st.expander(f"📋 查看全校【待確認】總表 (共{len(all_pending_list)}人) - 可直接編輯", expanded=False):
@@ -529,7 +537,8 @@ elif menu == "📅 未來入學預覽":
                             "idx": None, "聯繫狀態": None,
                             "班級": st.column_config.TextColumn(width="small", disabled=True),
                             "已聯繫": st.column_config.CheckboxColumn(width="small"),
-                            "報名狀態": st.column_config.SelectboxColumn(options=["排隊中", "已安排", "考慮中", "放棄"], width="medium"),
+                            # UPDATE: 選項增加 "確認入學"
+                            "報名狀態": st.column_config.SelectboxColumn(options=["排隊中", "確認入學", "已安排", "考慮中", "放棄"], width="medium"),
                             "幼兒姓名": st.column_config.TextColumn(disabled=True),
                             "家長稱呼": st.column_config.TextColumn(disabled=True),
                             "電話": st.column_config.TextColumn(disabled=True),
@@ -537,6 +546,7 @@ elif menu == "📅 未來入學預覽":
                         },
                         hide_index=True, use_container_width=True
                     )
+                    st.caption("ℹ️ 將狀態改為「確認入學」並儲存，學生就會移動到下方的確認名單。")
                     if st.form_submit_button("💾 儲存待確認清單變更"):
                         fulldf = load_registered_data()
                         chg = False
@@ -551,7 +561,7 @@ elif menu == "📅 未來入學預覽":
             else: st.info("目前沒有待確認的學生。")
 
         st.markdown("---")
-        st.subheader(f"🏆 {search_y} 學年度 - 確定入學榜單")
+        st.subheader(f"🏆 {search_y} 學年度 - 確認入學名單 (僅顯示確認入學)")
         col_l, col_m, col_s = st.columns(3)
         def render_board(column, title, data):
             with column:
@@ -593,13 +603,14 @@ elif menu == "👩‍🏫 師資人力預估":
                 gr = get_grade_for_year(dob, cal_y)
             
             if gr in cts:
-                if "已安排" in str(r['報名狀態']): cts[gr]["c"] += 1
+                # UPDATE: 師資預估也改為只抓「確認入學」
+                if "確認入學" in str(r['報名狀態']): cts[gr]["c"] += 1
                 else: cts[gr]["w"] += 1
         except: pass
 
     data = []
     for g, rat in [("托嬰中心", r_d), ("幼幼班", r_t), ("小班", r_k), ("中班", r_k), ("大班", r_k)]:
         c, w = cts[g]["c"], cts[g]["w"]
-        data.append({"班級": g, "師生比": f"1:{rat}", "已安排": c, "排隊": w, 
+        data.append({"班級": g, "師生比": f"1:{rat}", "確認入學": c, "排隊/潛在": w, 
                      "需老師(確)": math.ceil(c/rat), "需老師(含排)": math.ceil((c+w)/rat)})
     st.dataframe(pd.DataFrame(data), use_container_width=True)
