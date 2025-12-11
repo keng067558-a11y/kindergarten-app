@@ -99,6 +99,7 @@ def load_registered_data():
 def sync_data_to_gsheets(new_df):
     try:
         save_df = new_df.copy()
+        # 移除暫存欄位
         for c in ['is_contacted', 'original_index', 'sort_val']: 
             if c in save_df.columns: save_df = save_df.drop(columns=[c])
         
@@ -298,7 +299,7 @@ if menu == "👶 新增報名":
                 st.rerun()
         st.button("✅ 確認送出", type="primary", on_click=submit_all_cb, use_container_width=True)
 
-# --- 頁面 2: 資料管理 (已更新：優先級顏色 + 排序 + 年段顯示) ---
+# --- 頁面 2: 資料管理 (已整合：優先級顏色 + 排序 + 年段顯示) ---
 elif menu == "📂 資料管理中心":
     st.header("📂 資料管理中心")
     col_search, col_dl = st.columns([4, 1])
@@ -309,7 +310,7 @@ elif menu == "📂 資料管理中心":
         disp = df.copy()
         disp['original_index'] = disp.index
         
-        # === 排序與優先級邏輯 ===
+        # === 排序與優先級邏輯 (優 > 中 > 差) ===
         prio_map = {"優": 0, "中": 1, "差": 2}
         disp['sort_val'] = disp['重要性'].map(prio_map).fillna(1)
         # 排序：優先級 (優->中->差) > 登記日期 (新->舊)
