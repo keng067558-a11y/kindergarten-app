@@ -344,8 +344,9 @@ elif menu == "📂 資料管理中心":
                 plan_str = str(row_data['預計入學資訊'])
                 grade_show = plan_str.split(" - ")[-1] if " - " in plan_str else (plan_str if plan_str and plan_str != "nan" else "未定")
                 
+                # [修改] 不再截斷備註，直接顯示完整內容
                 raw_note = str(row_data['備註']).strip()
-                note_str = f" | 📝 {raw_note[:10]}..." if raw_note else ""
+                note_str = f" | 📝 {raw_note}" if raw_note else ""
                 
                 expander_title = f"{prio_icon} 【{grade_show}】 {row_data['家長稱呼']} | 📞 {ph}{note_str}"
                 
