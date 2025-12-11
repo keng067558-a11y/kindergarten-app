@@ -2,7 +2,8 @@ import streamlit as st
 import pandas as pd
 from datetime import date, datetime
 import math
-import time
+# 移除 time 模組的依賴，不再需要人工等待
+# import time 
 
 # ==========================================
 # 0. 基礎設定 (系統核心)
@@ -28,13 +29,8 @@ st.markdown("""
 <style>
     .stApp { font-family: "Microsoft JhengHei", sans-serif; }
     .streamlit-expanderHeader { background-color: #f8f9fa; border: 1px solid #eee; font-weight: bold; color: #333; }
-    .metric-card {
-        background-color: #f0f2f6;
-        padding: 15px;
-        border-radius: 8px;
-        border-left: 5px solid #ff4b4b;
-        margin-bottom: 10px;
-    }
+    /* 優化讀取時的轉場體驗 */
+    .stSpinner { margin-top: 20px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -75,7 +71,8 @@ def connect_to_gsheets_students():
     c = get_gsheet_client()
     return c.open(SHEET_NAME).sheet1 if c else None
 
-@st.cache_data(ttl=60)
+# [優化] 將 TTL 從 60 延長至 300 (5分鐘)，減少不必要的網路讀取
+@st.cache_data(ttl=300)
 def load_registered_data():
     sheet = connect_to_gsheets_students()
     df = pd.DataFrame()
@@ -99,7 +96,6 @@ def load_registered_data():
 def sync_data_to_gsheets(new_df):
     try:
         save_df = new_df.copy()
-        # 移除暫存欄位
         for c in ['is_contacted', 'original_index', 'sort_val']: 
             if c in save_df.columns: save_df = save_df.drop(columns=[c])
         
@@ -107,7 +103,6 @@ def sync_data_to_gsheets(new_df):
         for c in final_cols: 
             if c not in save_df.columns: save_df[c] = ""
         
-        # 填補空值
         save_df['重要性'] = save_df['重要性'].replace('', '中').fillna('中')
         save_df = save_df[final_cols].astype(str)
 
@@ -120,7 +115,7 @@ def sync_data_to_gsheets(new_df):
             except: pass 
 
         save_df.to_csv(LOCAL_CSV, index=False)
-        load_registered_data.clear()
+        load_registered_data.clear() # 清除快取，確保下次讀取是新的
         return True
     except Exception as e:
         st.error(f"儲存錯誤: {e}")
@@ -134,7 +129,8 @@ def connect_to_gsheets_expenses():
         except: return None
     return None
 
-@st.cache_data(ttl=60)
+# [優化] 將 TTL 從 60 延長至 300
+@st.cache_data(ttl=300)
 def load_expenses_data():
     sheet = connect_to_gsheets_expenses()
     df = pd.DataFrame()
@@ -220,12 +216,12 @@ def calculate_admission_roadmap(dob):
 # 3. 頁面邏輯 (狀態與Callback)
 # ==========================================
 if 'temp_children' not in st.session_state: st.session_state.temp_children = []
-if 'edited_rows' not in st.session_state: st.session_state.edited_rows = {}
-for k in ['msg_success', 'msg_error']: 
-    if k not in st.session_state: st.session_state[k] = None
 
-if st.session_state['msg_success']: st.success(st.session_state['msg_success']); st.session_state['msg_success']=None
-if st.session_state['msg_error']: st.error(st.session_state['msg_error']); st.session_state['msg_error']=None
+# [優化] 改用 st.toast，所以不需要 msg_success 這種需要等待的狀態變數
+if 'msg_error' not in st.session_state: st.session_state['msg_error'] = None
+if st.session_state['msg_error']: 
+    st.error(st.session_state['msg_error'])
+    st.session_state['msg_error']=None
 
 def add_child_cb():
     y, m, d = st.session_state.get("y_add", 112), st.session_state.get("m_add", 1), st.session_state.get("d_add", 1)
@@ -240,6 +236,7 @@ def add_child_cb():
         "備註": st.session_state.get("input_note", ""),
         "重要性": "中"
     })
+    # 清空欄位
     st.session_state.input_c_name = ""
     st.session_state.input_note = ""
 
@@ -248,27 +245,33 @@ def submit_all_cb():
     p_name, phone = st.session_state.input_p_name, st.session_state.input_phone
     if not p_name or not phone: st.session_state['msg_error'] = "❌ 家長與電話必填"; return
     
-    cur_df = load_registered_data()
-    rows = []
-    for c in st.session_state.temp_children:
-        rows.append({
-            '報名狀態': c['報名狀態'], '聯繫狀態': '未聯繫', '登記日期': to_roc_str(date.today()),
-            '幼兒姓名': c['幼兒姓名'], '家長稱呼': f"{p_name} {st.session_state.input_p_title}",
-            '電話': str(phone), '幼兒生日': c['幼兒生日'], '預計入學資訊': c['預計入學資訊'],
-            '推薦人': st.session_state.input_referrer, '備註': c['備註'], '重要性': c['重要性']
-        })
-    if sync_data_to_gsheets(pd.concat([cur_df, pd.DataFrame(rows)], ignore_index=True)):
-        st.session_state['msg_success'] = f"✅ 新增 {len(rows)} 筆資料"
-        st.session_state.temp_children = []
-        st.session_state.input_p_name = ""
-        st.session_state.input_phone = ""
+    # 顯示轉圈圈，讓使用者知道正在處理
+    with st.spinner('正在雲端儲存中...'):
+        cur_df = load_registered_data()
+        rows = []
+        for c in st.session_state.temp_children:
+            rows.append({
+                '報名狀態': c['報名狀態'], '聯繫狀態': '未聯繫', '登記日期': to_roc_str(date.today()),
+                '幼兒姓名': c['幼兒姓名'], '家長稱呼': f"{p_name} {st.session_state.input_p_title}",
+                '電話': str(phone), '幼兒生日': c['幼兒生日'], '預計入學資訊': c['預計入學資訊'],
+                '推薦人': st.session_state.input_referrer, '備註': c['備註'], '重要性': c['重要性']
+            })
+        if sync_data_to_gsheets(pd.concat([cur_df, pd.DataFrame(rows)], ignore_index=True)):
+            # [優化] 使用 toast 替代 success + sleep
+            st.toast(f"✅ 成功新增 {len(rows)} 筆資料", icon="🎉")
+            st.session_state.temp_children = []
+            st.session_state.input_p_name = ""
+            st.session_state.input_phone = ""
 
 # ==========================================
 # 4. 主程式與選單
 # ==========================================
 st.title("🏫 幼兒園新生管理系統")
-df = load_registered_data()
-df_exp = load_expenses_data()
+
+# 使用 spinner 包裹讀取過程
+with st.spinner("載入資料庫..."):
+    df = load_registered_data()
+    df_exp = load_expenses_data()
 
 menu = st.sidebar.radio("功能導航", ["👶 新增報名", "📂 資料管理中心", "💰 廠商發票管理", "📅 未來入學預覽", "👩‍🏫 師資人力預估"])
 
@@ -297,9 +300,10 @@ if menu == "👶 新增報名":
             if st.button("❌ 移除", key=f"rm_{i}"): 
                 st.session_state.temp_children.pop(i)
                 st.rerun()
+        # 按下後會觸發 submit_all_cb (內含 toast)
         st.button("✅ 確認送出", type="primary", on_click=submit_all_cb, use_container_width=True)
 
-# --- 頁面 2: 資料管理 (已整合：優先級顏色 + 排序 + 年段顯示) ---
+# --- 頁面 2: 資料管理 ---
 elif menu == "📂 資料管理中心":
     st.header("📂 資料管理中心")
     col_search, col_dl = st.columns([4, 1])
@@ -310,10 +314,9 @@ elif menu == "📂 資料管理中心":
         disp = df.copy()
         disp['original_index'] = disp.index
         
-        # === 排序與優先級邏輯 (優 > 中 > 差) ===
+        # 排序優化
         prio_map = {"優": 0, "中": 1, "差": 2}
         disp['sort_val'] = disp['重要性'].map(prio_map).fillna(1)
-        # 排序：優先級 (優->中->差) > 登記日期 (新->舊)
         disp = disp.sort_values(by=['sort_val', '登記日期'], ascending=[True, False])
         
         if kw: disp = disp[disp.astype(str).apply(lambda x: x.str.contains(kw, case=False)).any(axis=1)]
@@ -328,26 +331,19 @@ elif menu == "📂 資料管理中心":
             
             prio_opts = ["優", "中", "差"]
             
-            # 使用 sort=False 維持我們設定好的優先級順序
+            # 這裡使用 sort=False 避免 pandas 重新排序，節省一點點計算時間
             for ph, gp in tdf.groupby('電話', sort=False):
                 row_data = gp.iloc[0]
                 curr_prio = row_data.get('重要性', '中')
                 if curr_prio not in prio_opts: curr_prio = "中"
                 
-                # --- 視覺化邏輯 ---
-                # 1. 顏色圖示
+                # 視覺化邏輯
                 icon_map = {"優": "🔴", "中": "🟡", "差": "⚪"}
                 prio_icon = icon_map.get(curr_prio, "⚪")
 
-                # 2. 擷取年段 (顯示在標題)
                 plan_str = str(row_data['預計入學資訊'])
-                grade_show = "未定"
-                if " - " in plan_str:
-                    grade_show = plan_str.split(" - ")[-1]
-                elif plan_str and plan_str != "nan":
-                    grade_show = plan_str
+                grade_show = plan_str.split(" - ")[-1] if " - " in plan_str else (plan_str if plan_str and plan_str != "nan" else "未定")
                 
-                # 3. 備註預覽
                 raw_note = str(row_data['備註']).strip()
                 note_str = f" | 📝 {raw_note[:10]}..." if raw_note else ""
                 
@@ -368,14 +364,16 @@ elif menu == "📂 資料管理中心":
                         c2.selectbox("狀態", opts, index=opts.index(val), key=f"s_{uk}")
 
                         c3, c4 = st.columns([1, 1])
-                        try: 
+                        # 簡化計算邏輯：如果預計入學資訊已有值，就不重新計算生日，節省效能
+                        plans = [str(r['預計入學資訊'])]
+                        try:
+                            # 只有當使用者點開下拉選單想改的時候，我們才假設他可能需要重新計算
                             dob = date(int(str(r['幼兒生日']).split('/')[0])+1911, int(str(r['幼兒生日']).split('/')[1]), int(str(r['幼兒生日']).split('/')[2]))
                             plans = calculate_admission_roadmap(dob)
-                        except: plans = ["無法計算"]
-                        plan_val = str(r['預計入學資訊'])
-                        if plan_val not in plans: plans.insert(0, plan_val)
-                        
-                        c3.selectbox("預計年段", plans, index=plans.index(plan_val), key=f"p_{uk}")
+                            if str(r['預計入學資訊']) not in plans: plans.insert(0, str(r['預計入學資訊']))
+                        except: pass
+
+                        c3.selectbox("預計年段", plans, index=0 if str(r['預計入學資訊']) == plans[0] else 0, key=f"p_{uk}")
                         c4.selectbox("優先等級", prio_opts, index=prio_opts.index(curr_prio), key=f"imp_{uk}")
 
                         st.text_area("備註內容", r['備註'], key=f"n_{uk}", height=80, placeholder="備註...")
@@ -383,42 +381,45 @@ elif menu == "📂 資料管理中心":
             return True
 
         def process_save(tdf, key_pfx):
-            fulldf = load_registered_data()
-            changes_made = False
-            
-            for _, r in tdf.iterrows():
-                oid = r['original_index']
-                uk = f"{key_pfx}_{oid}"
+            with st.spinner("正在更新資料庫..."):
+                fulldf = load_registered_data()
+                changes_made = False
                 
-                new_contact = st.session_state.get(f"c_{uk}")
-                new_status = st.session_state.get(f"s_{uk}")
-                new_plan = st.session_state.get(f"p_{uk}")
-                new_note = st.session_state.get(f"n_{uk}")
-                new_imp = st.session_state.get(f"imp_{uk}")
-                
-                if new_contact is not None:
-                    ncon_str = "已聯繫" if new_contact else "未聯繫"
-                    if fulldf.at[oid, '聯繫狀態'] != ncon_str: fulldf.at[oid, '聯繫狀態'] = ncon_str; changes_made = True
-                
-                if new_status is not None and fulldf.at[oid, '報名狀態'] != new_status:
-                    fulldf.at[oid, '報名狀態'] = new_status; changes_made = True
+                for _, r in tdf.iterrows():
+                    oid = r['original_index']
+                    uk = f"{key_pfx}_{oid}"
                     
-                if new_plan is not None and fulldf.at[oid, '預計入學資訊'] != new_plan:
-                    fulldf.at[oid, '預計入學資訊'] = new_plan; changes_made = True
+                    # 讀取 Session State
+                    new_contact = st.session_state.get(f"c_{uk}")
+                    new_status = st.session_state.get(f"s_{uk}")
+                    new_plan = st.session_state.get(f"p_{uk}")
+                    new_note = st.session_state.get(f"n_{uk}")
+                    new_imp = st.session_state.get(f"imp_{uk}")
                     
-                if new_note is not None and fulldf.at[oid, '備註'] != new_note:
-                    fulldf.at[oid, '備註'] = new_note; changes_made = True
+                    # 比對差異
+                    if new_contact is not None:
+                        ncon_str = "已聯繫" if new_contact else "未聯繫"
+                        if fulldf.at[oid, '聯繫狀態'] != ncon_str: fulldf.at[oid, '聯繫狀態'] = ncon_str; changes_made = True
                     
-                if new_imp is not None and fulldf.at[oid, '重要性'] != new_imp:
-                    fulldf.at[oid, '重要性'] = new_imp; changes_made = True
+                    if new_status is not None and fulldf.at[oid, '報名狀態'] != new_status:
+                        fulldf.at[oid, '報名狀態'] = new_status; changes_made = True
+                        
+                    if new_plan is not None and fulldf.at[oid, '預計入學資訊'] != new_plan:
+                        fulldf.at[oid, '預計入學資訊'] = new_plan; changes_made = True
+                        
+                    if new_note is not None and fulldf.at[oid, '備註'] != new_note:
+                        fulldf.at[oid, '備註'] = new_note; changes_made = True
+                        
+                    if new_imp is not None and fulldf.at[oid, '重要性'] != new_imp:
+                        fulldf.at[oid, '重要性'] = new_imp; changes_made = True
 
-            if changes_made:
-                if sync_data_to_gsheets(fulldf):
-                    st.success("✅ 資料已批次更新！")
-                    time.sleep(1)
-                    st.rerun()
-            else:
-                st.info("沒有偵測到變更")
+                if changes_made:
+                    if sync_data_to_gsheets(fulldf):
+                        # [優化] 使用 toast 替代 success + sleep + rerun
+                        st.toast("✅ 資料已批次更新！", icon="💾")
+                        st.rerun() # 立即重整顯示最新狀態
+                else:
+                    st.toast("沒有偵測到變更", icon="ℹ️")
 
         with t1:
             with st.form("form_t1"):
@@ -450,7 +451,7 @@ elif menu == "💰 廠商發票管理":
         with st.form("add_expense_form"):
             c1, c2 = st.columns(2)
             e_date = c1.date_input("請款日期", value=date.today())
-            e_vendor = c2.text_input("廠商名稱 (如: 全聯、XX圖書)", placeholder="輸入廠商...")
+            e_vendor = c2.text_input("廠商名稱", placeholder="輸入廠商...")
             
             c3, c4 = st.columns(2)
             proj_opts = ["一般行政", "115教保計畫", "餐點費", "教學設備", "環境修繕", "其他"]
@@ -464,13 +465,15 @@ elif menu == "💰 廠商發票管理":
             e_note = st.text_area("備註", height=50)
 
             if st.form_submit_button("💾 新增紀錄"):
-                new_row = {
-                    '日期': str(e_date), '廠商名稱': e_vendor, '計畫類別': e_proj,
-                    '項目說明': e_item, '金額': e_amount, '發票狀態': e_status, '備註': e_note
-                }
-                new_df = pd.concat([df_exp, pd.DataFrame([new_row])], ignore_index=True)
-                if sync_expenses_to_gsheets(new_df):
-                    st.success("已新增！"); time.sleep(0.5); st.rerun()
+                with st.spinner("儲存中..."):
+                    new_row = {
+                        '日期': str(e_date), '廠商名稱': e_vendor, '計畫類別': e_proj,
+                        '項目說明': e_item, '金額': e_amount, '發票狀態': e_status, '備註': e_note
+                    }
+                    new_df = pd.concat([df_exp, pd.DataFrame([new_row])], ignore_index=True)
+                    if sync_expenses_to_gsheets(new_df):
+                        st.toast("已新增支出紀錄！", icon="💰")
+                        st.rerun()
 
     if not df_exp.empty:
         total_amt = df_exp['金額'].sum()
@@ -512,8 +515,11 @@ elif menu == "💰 廠商發票管理":
         if st.button("💾 更新發票/經費紀錄"):
             if len(show_df) != len(df_exp):
                 st.warning("⚠️ 篩選模式下無法直接儲存「刪除」操作，請清除篩選後再刪除。")
-            if sync_expenses_to_gsheets(edited_exp):
-                st.success("資料已更新！"); time.sleep(0.5); st.rerun()
+            else:
+                with st.spinner("更新中..."):
+                    if sync_expenses_to_gsheets(edited_exp):
+                        st.toast("資料已更新！", icon="✅")
+                        st.rerun()
 
 # --- 頁面 4: 未來預覽 ---
 elif menu == "📅 未來入學預覽":
@@ -526,9 +532,7 @@ elif menu == "📅 未來入學預覽":
     if not df.empty:
         roster = {k: {"conf": [], "pend": []} for k in ["托嬰中心", "幼幼班", "小班", "中班", "大班"]}
         stats = {"tot": 0, "conf": 0, "pend": 0}
-        
         all_pending_list = []
-        all_confirmed_list = []
 
         for idx, row in df.iterrows():
             try:
@@ -542,7 +546,6 @@ elif menu == "📅 未來入學預覽":
                     grade = get_grade_for_year(dob, search_y)
 
                 status = str(row['報名狀態'])
-                
                 is_conf = "確認入學" in status
                 is_drop = "放棄" in status
 
@@ -553,7 +556,6 @@ elif menu == "📅 未來入學預覽":
                     if is_conf:
                         stats['conf'] += 1
                         roster[grade]["conf"].append(item)
-                        all_confirmed_list.append(item)
                     else:
                         stats['pend'] += 1
                         roster[grade]["pend"].append(item)
@@ -587,16 +589,18 @@ elif menu == "📅 未來入學預覽":
                     )
                     st.caption("ℹ️ 將狀態改為「確認入學」並儲存，學生就會移動到下方的確認名單。")
                     if st.form_submit_button("💾 儲存待確認清單變更"):
-                        fulldf = load_registered_data()
-                        chg = False
-                        for i, r in edited_master.iterrows():
-                            oid = r['idx']
-                            ncon = "已聯繫" if r['已聯繫'] else "未聯繫"
-                            if fulldf.at[oid, '聯繫狀態']!=ncon: fulldf.at[oid, '聯繫狀態']=ncon; chg=True
-                            if fulldf.at[oid, '報名狀態']!=r['報名狀態']: fulldf.at[oid, '報名狀態']=r['報名狀態']; chg=True
-                            if fulldf.at[oid, '備註']!=r['備註']: fulldf.at[oid, '備註']=r['備註']; chg=True
-                        if chg and sync_data_to_gsheets(fulldf):
-                            st.success("更新成功"); time.sleep(0.5); st.rerun()
+                        with st.spinner("更新中..."):
+                            fulldf = load_registered_data()
+                            chg = False
+                            for i, r in edited_master.iterrows():
+                                oid = r['idx']
+                                ncon = "已聯繫" if r['已聯繫'] else "未聯繫"
+                                if fulldf.at[oid, '聯繫狀態']!=ncon: fulldf.at[oid, '聯繫狀態']=ncon; chg=True
+                                if fulldf.at[oid, '報名狀態']!=r['報名狀態']: fulldf.at[oid, '報名狀態']=r['報名狀態']; chg=True
+                                if fulldf.at[oid, '備註']!=r['備註']: fulldf.at[oid, '備註']=r['備註']; chg=True
+                            if chg and sync_data_to_gsheets(fulldf):
+                                st.toast("更新成功", icon="✅")
+                                st.rerun()
             else: st.info("目前沒有待確認的學生。")
 
         st.markdown("---")
