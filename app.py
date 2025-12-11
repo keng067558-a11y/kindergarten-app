@@ -226,7 +226,7 @@ def add_child_cb():
     st.session_state.temp_children.append({
         "幼兒姓名": st.session_state.get("input_c_name", "") or "(未填)",
         "幼兒生日": to_roc_str(dob),
-        "報名狀態": "預約參觀", # 預設改為預約參觀
+        "報名狀態": "預約參觀",
         "預計入學資訊": plans[0] if plans else "待確認",
         "備註": st.session_state.get("input_note", ""),
         "重要性": "中"
@@ -345,7 +345,7 @@ elif menu == "📂 資料管理中心":
                         c1, c2 = st.columns([1, 1])
                         c1.checkbox("已聯繫", r['is_contacted'], key=f"c_{uk}")
                         
-                        # [狀態選單] 加入預約參觀
+                        # [狀態選單] 
                         opts = ["預約參觀", "排隊中", "確認入學", "已安排", "考慮中", "放棄", "超齡/畢業"]
                         val = r['報名狀態'] if r['報名狀態'] in opts else "排隊中"
                         c2.selectbox("狀態", opts, index=opts.index(val), key=f"s_{uk}")
@@ -413,12 +413,13 @@ elif menu == "📂 資料管理中心":
                     st.toast("沒有偵測到變更", icon="ℹ️")
 
         with t1:
-            # 修正：檢查是否有資料，避免建立空表單導致錯誤
             target_data = disp[~disp['is_contacted']]
             if not target_data.empty:
                 with st.form("form_t1"):
                     render_cards_in_form(target_data, "t1")
-                    st.form_submit_button("💾 儲存本頁變更", type="primary", use_container_width=True, on_click=lambda: process_save(target_data, "t1"))
+                    # [修正] 改回使用 if 判斷，避免 callback rerun 錯誤
+                    if st.form_submit_button("💾 儲存本頁變更", type="primary", use_container_width=True):
+                        process_save(target_data, "t1")
             else:
                 st.info("目前沒有待聯繫的資料。")
 
@@ -427,7 +428,9 @@ elif menu == "📂 資料管理中心":
             if not target_data.empty:
                 with st.form("form_t2"):
                     render_cards_in_form(target_data, "t2")
-                    st.form_submit_button("💾 儲存本頁變更", type="primary", use_container_width=True, on_click=lambda: process_save(target_data, "t2"))
+                    # [修正] 改回使用 if 判斷
+                    if st.form_submit_button("💾 儲存本頁變更", type="primary", use_container_width=True):
+                        process_save(target_data, "t2")
             else:
                 st.info("目前沒有已聯繫的資料。")
 
@@ -435,7 +438,9 @@ elif menu == "📂 資料管理中心":
             if not disp.empty:
                 with st.form("form_t3"):
                     render_cards_in_form(disp, "t3")
-                    st.form_submit_button("💾 儲存本頁變更", type="primary", use_container_width=True, on_click=lambda: process_save(disp, "t3"))
+                    # [修正] 改回使用 if 判斷
+                    if st.form_submit_button("💾 儲存本頁變更", type="primary", use_container_width=True):
+                        process_save(disp, "t3")
             else:
                 st.info("目前沒有任何資料。")
 
