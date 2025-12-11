@@ -10,7 +10,6 @@ import uuid
 # ==========================================
 st.set_page_config(page_title="新生與經費管理系統", layout="wide", page_icon="🏫")
 
-# 嘗試匯入 gspread (容錯模式：若無安裝也不會崩潰)
 try:
     import gspread
     from oauth2client.service_account import ServiceAccountCredentials
@@ -18,14 +17,12 @@ try:
 except ImportError:
     HAS_GSPREAD = False
 
-# 嘗試匯入 st_keyup (搜尋優化)
 try:
     from streamlit_keyup import st_keyup
 except ImportError:
     def st_keyup(label, placeholder=None, key=None):
         return st.text_input(label, placeholder=placeholder, key=key)
 
-# 自定義 CSS (美化介面)
 st.markdown("""
 <style>
     .stApp { font-family: "Microsoft JhengHei", sans-serif; }
@@ -72,7 +69,7 @@ def get_gsheet_client():
         return gspread.authorize(creds)
     except: return None
 
-# --- 學生資料讀取 (包含重要性欄位) ---
+# --- 學生資料讀取 ---
 def connect_to_gsheets_students():
     c = get_gsheet_client()
     return c.open(SHEET_NAME).sheet1 if c else None
@@ -95,7 +92,9 @@ def load_registered_data():
         df['電話'] = df['電話'].astype(str).str.strip().apply(lambda x: '0' + x if len(x) == 9 and x.startswith('9') else x)
     if '聯繫狀態' not in df.columns: df['聯繫狀態'] = '未聯繫'
     if '報名狀態' not in df.columns: df['報名狀態'] = '排隊中'
-    if '重要性' not in df.columns: df['重要性'] = '🟢 普通' 
+    
+    # UPDATE: 預設重要性改為 "中"
+    if '重要性' not in df.columns: df['重要性'] = '中' 
     return df
 
 def sync_data_to_gsheets(new_df):
@@ -108,8 +107,8 @@ def sync_data_to_gsheets(new_df):
         for c in final_cols: 
             if c not in save_df.columns: save_df[c] = ""
         
-        # 填補空值
-        save_df['重要性'] = save_df['重要性'].replace('', '🟢 普通').fillna('🟢 普通')
+        # UPDATE: 填補空值預設為 "中"
+        save_df['重要性'] = save_df['重要性'].replace('', '中').fillna('中')
         save_df = save_df[final_cols].astype(str)
 
         sheet = connect_to_gsheets_students()
@@ -239,7 +238,7 @@ def add_child_cb():
         "報名狀態": "排隊中",
         "預計入學資訊": plans[0] if plans else "待確認",
         "備註": st.session_state.get("input_note", ""),
-        "重要性": "🟢 普通"
+        "重要性": "中" # UPDATE: 新增預設為中
     })
     st.session_state.input_c_name = ""
     st.session_state.input_note = ""
@@ -318,15 +317,15 @@ elif menu == "📂 資料管理中心":
         def render_cards(tdf, key_pfx):
             if tdf.empty: st.caption("無資料"); return
             
-            prio_opts = ["🔴 緊急/重要", "🟡 需注意", "🟢 普通"]
+            # UPDATE: 優先等級選項更新
+            prio_opts = ["優", "中", "差"]
 
             for ph, gp in tdf.groupby('電話'):
                 row_data = gp.iloc[0]
                 
                 # 視覺邏輯：重要性與備註
-                curr_prio = row_data.get('重要性', '🟢 普通')
-                if curr_prio not in prio_opts: curr_prio = "🟢 普通"
-                icon = curr_prio.split(" ")[0]
+                curr_prio = row_data.get('重要性', '中')
+                if curr_prio not in prio_opts: curr_prio = "中" # 舊資料容錯
                 
                 # 備註顯示
                 raw_note = str(row_data['備註']).strip()
@@ -336,8 +335,8 @@ elif menu == "📂 資料管理中心":
                 else:
                     note_str = ""
                 
-                # 組合標題
-                expander_title = f"{icon} {row_data['家長稱呼']} | 📞 {ph}{note_str}"
+                # UPDATE: 標題直接顯示 優/中/差
+                expander_title = f"[{curr_prio}] {row_data['家長稱呼']} | 📞 {ph}{note_str}"
                 
                 with st.expander(expander_title):
                     for _, r in gp.iterrows():
@@ -358,9 +357,6 @@ elif menu == "📂 資料管理中心":
 
                         c1.checkbox("已聯繫", r['is_contacted'], key=f"c_{uk}", on_change=upd)
                         
-                        # ==========================================
-                        # UPDATE: 更新狀態選項，加入「確認入學」
-                        # ==========================================
                         opts = ["排隊中", "確認入學", "已安排", "考慮中", "放棄", "超齡/畢業"]
                         val = r['報名狀態'] if r['報名狀態'] in opts else opts[0]
                         c2.selectbox("狀態", opts, index=opts.index(val), key=f"s_{uk}", on_change=upd)
@@ -374,6 +370,8 @@ elif menu == "📂 資料管理中心":
                         if plan_val not in plans: plans.insert(0, plan_val)
                         
                         c3.selectbox("預計年段", plans, index=plans.index(plan_val), key=f"p_{uk}", on_change=upd)
+                        
+                        # UPDATE: 下拉選單使用新選項
                         c4.selectbox("優先等級", prio_opts, index=prio_opts.index(curr_prio), key=f"imp_{uk}", on_change=upd)
 
                         st.caption("備註事項 (編輯後請按儲存，標題會自動更新)：")
@@ -499,9 +497,6 @@ elif menu == "📅 未來入學預覽":
 
                 status = str(row['報名狀態'])
                 
-                # ==========================================
-                # UPDATE: 嚴格定義「確認入學」
-                # ==========================================
                 # 只有 "確認入學" 才會被視為確認，"已安排" 會被歸類到排隊/待確認中
                 is_conf = "確認入學" in status
                 is_drop = "放棄" in status
@@ -521,7 +516,7 @@ elif menu == "📅 未來入學預覽":
             except: pass
 
         c1, c2, c3 = st.columns(3)
-        c1.metric("✅ 確定入學", stats['conf']) # 文字修改：更精確
+        c1.metric("✅ 確定入學", stats['conf'])
         c2.metric("⏳ 潛在/排隊", stats['pend'])
         c3.metric("📋 總符合人數", stats['tot'])
         
@@ -537,7 +532,6 @@ elif menu == "📅 未來入學預覽":
                             "idx": None, "聯繫狀態": None,
                             "班級": st.column_config.TextColumn(width="small", disabled=True),
                             "已聯繫": st.column_config.CheckboxColumn(width="small"),
-                            # UPDATE: 選項增加 "確認入學"
                             "報名狀態": st.column_config.SelectboxColumn(options=["排隊中", "確認入學", "已安排", "考慮中", "放棄"], width="medium"),
                             "幼兒姓名": st.column_config.TextColumn(disabled=True),
                             "家長稱呼": st.column_config.TextColumn(disabled=True),
@@ -603,7 +597,6 @@ elif menu == "👩‍🏫 師資人力預估":
                 gr = get_grade_for_year(dob, cal_y)
             
             if gr in cts:
-                # UPDATE: 師資預估也改為只抓「確認入學」
                 if "確認入學" in str(r['報名狀態']): cts[gr]["c"] += 1
                 else: cts[gr]["w"] += 1
         except: pass
