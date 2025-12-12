@@ -32,12 +32,12 @@ st.markdown("""
     div[data-testid="stVerticalBlock"] > div[data-testid="stVerticalBlock"] {
         gap: 0.5rem;
     }
-    .result-card {
-        background-color: #e8f4f8;
-        padding: 20px;
-        border-radius: 10px;
-        border-left: 5px solid #007bff;
-        margin-bottom: 20px;
+    .metric-box {
+        background-color: #f0f2f6;
+        border-radius: 8px;
+        padding: 15px;
+        text-align: center;
+        border: 1px solid #ddd;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -45,9 +45,9 @@ st.markdown("""
 # 定義全域新的狀態選項
 NEW_STATUS_OPTIONS = ["預約參觀", "排隊等待", "確認入學", "確定不收"]
 
-# 初始化 Session State 用於儲存模擬數據 (記憶功能)
-if 'sim_data_store' not in st.session_state:
-    st.session_state['sim_data_store'] = {}
+# 初始化 Session State (記憶功能)
+if 'calc_memory' not in st.session_state:
+    st.session_state['calc_memory'] = {}
 
 # ==========================================
 # 1. 資料存取邏輯
@@ -229,7 +229,7 @@ st.title("🏫 幼兒園新生管理系統")
 with st.spinner("載入資料庫..."):
     df = load_registered_data()
 
-menu = st.sidebar.radio("功能導航", ["👶 新增報名", "📂 資料管理中心", "🎓 學年快速查詢", "📅 未來入學預覽", "👩‍🏫 師資與招生沙盤推演"])
+menu = st.sidebar.radio("功能導航", ["👶 新增報名", "📂 資料管理中心", "🎓 學年快速查詢", "📅 未來入學預覽", "👩‍🏫 招生缺額與師資試算"])
 
 # --- 頁面 1: 新增 ---
 if menu == "👶 新增報名":
@@ -559,139 +559,110 @@ elif menu == "📅 未來入學預覽":
         render_board(col_d, "🍼 托嬰中心", roster["托嬰中心"]["conf"])
 
 # ------------------------------------------
-# 頁面 5: 師資與招生沙盤推演 (簡化版)
+# 頁面 5: 招生缺額與師資試算 (極簡邏輯版)
 # ------------------------------------------
-elif menu == "👩‍🏫 師資與招生沙盤推演":
-    st.header("👩‍🏫 師資與招生沙盤推演")
-    st.info("此功能可讓您**手動修改學生人數**，進行「假設情境」模擬，計算所需的師資與招生缺額。")
+elif menu == "👩‍🏫 招生缺額與師資試算":
+    st.header("👩‍🏫 招生缺額與師資試算")
+    st.info("計算邏輯：使用 **前一學年** 的在校生人數，推算 **預估學年** 升班後還需對外招收多少學生，並計算師資需求。")
 
-    # 1. 計算學年
-    cal_y = st.number_input("📅 預估學年", value=date.today().year - 1911 + 1)
+    # 1. 設定學年
+    cal_y = st.number_input("📅 預估學年 (目標)", value=date.today().year - 1911 + 1)
+    ref_y = cal_y - 1
     
-    # 2. 自動計算預設值 (從 DB)
-    def get_defaults(year):
-        d_counts = {
-            "0-2歲 (托嬰)": 0,
-            "2-3歲 (幼幼)": 0,
-            "3-4歲 (小班)": 0,
-            "4-5歲 (中班)": 0,
-            "5-6歲 (大班)": 0
-        }
+    # 2. 獲取資料庫預設值 (前一年)
+    def get_prev_counts(year):
+        c = {"幼幼": 0, "小": 0, "中": 0}
         for _, r in df.iterrows():
-            try:
-                if "確認入學" not in str(r['報名狀態']): continue
-                gr = None
-                if f"{year} 學年" in str(r['預計入學資訊']): gr = str(r['預計入學資訊']).split("-")[1].strip()
-                if not gr:
-                    dob = date(int(str(r['幼兒生日']).split('/')[0])+1911, int(str(r['幼兒生日']).split('/')[1]), int(str(r['幼兒生日']).split('/')[2]))
-                    gr = get_grade_for_year(dob, year)
-                
-                if gr == "托嬰中心": d_counts["0-2歲 (托嬰)"] += 1
-                elif gr == "幼幼班": d_counts["2-3歲 (幼幼)"] += 1
-                elif gr == "小班": d_counts["3-4歲 (小班)"] += 1
-                elif gr == "中班": d_counts["4-5歲 (中班)"] += 1
-                elif gr == "大班": d_counts["5-6歲 (大班)"] += 1
-            except: pass
-        
-        s_data = [
-            {"年段": "0-2歲 (托嬰)", "法規師生比 (1:N)": 5,  "模擬學生數 (人)": d_counts["0-2歲 (托嬰)"]},
-            {"年段": "2-3歲 (幼幼)", "法規師生比 (1:N)": 8,  "模擬學生數 (人)": d_counts["2-3歲 (幼幼)"]},
-            {"年段": "3-4歲 (小班)", "法規師生比 (1:N)": 15, "模擬學生數 (人)": d_counts["3-4歲 (小班)"]},
-            {"年段": "4-5歲 (中班)", "法規師生比 (1:N)": 15, "模擬學生數 (人)": d_counts["4-5歲 (中班)"]},
-            {"年段": "5-6歲 (大班)", "法規師生比 (1:N)": 15, "模擬學生數 (人)": d_counts["5-6歲 (大班)"]},
-        ]
-        if year >= 115:
-            for d in s_data:
-                if "小班" in d["年段"] or "中班" in d["年段"] or "大班" in d["年段"]: d["法規師生比 (1:N)"] = 12
-        return pd.DataFrame(s_data)
+            if "確認入學" not in str(r['報名狀態']): continue
+            gr = None
+            if f"{year} 學年" in str(r['預計入學資訊']): gr = str(r['預計入學資訊']).split("-")[1].strip()
+            if not gr:
+                dob = date(int(str(r['幼兒生日']).split('/')[0])+1911, int(str(r['幼兒生日']).split('/')[1]), int(str(r['幼兒生日']).split('/')[2]))
+                gr = get_grade_for_year(dob, year)
+            if gr == "幼幼班": c["幼幼"] += 1
+            elif gr == "小班": c["小"] += 1
+            elif gr == "中班": c["中"] += 1
+        return c
 
-    # 3. Session State 記憶功能
-    if cal_y not in st.session_state['sim_data_store']:
-        st.session_state['sim_data_store'][cal_y] = get_defaults(cal_y)
+    # 初始化/讀取 Session State
+    if cal_y not in st.session_state['calc_memory']:
+        db_data = get_prev_counts(ref_y)
+        st.session_state['calc_memory'][cal_y] = {
+            "prev_t": db_data["幼幼"],
+            "prev_s": db_data["小"],
+            "prev_m": db_data["中"],
+            "target_mixed": 90, # 預設總額
+            "target_t": 16      # 預設幼幼總額
+        }
+    
+    data = st.session_state['calc_memory'][cal_y]
 
+    # 重置按鈕
     if st.button("🔄 重置為資料庫數據"):
-        st.session_state['sim_data_store'][cal_y] = get_defaults(cal_y)
+        db_data = get_prev_counts(ref_y)
+        st.session_state['calc_memory'][cal_y]["prev_t"] = db_data["幼幼"]
+        st.session_state['calc_memory'][cal_y]["prev_s"] = db_data["小"]
+        st.session_state['calc_memory'][cal_y]["prev_m"] = db_data["中"]
         st.rerun()
 
-    st.subheader("🛠️ 當屆人數與師資試算")
-    st.caption("👇 修改下表數字，系統會即時計算老師需求與升班缺額。")
+    st.subheader(f"Step 1: 確認 {ref_y} 學年 (前一年) 在校生人數")
+    c1, c2, c3 = st.columns(3)
+    data["prev_t"] = c1.number_input(f"{ref_y} 幼幼班人數", value=data["prev_t"], min_value=0)
+    data["prev_s"] = c2.number_input(f"{ref_y} 小班人數", value=data["prev_s"], min_value=0)
+    data["prev_m"] = c3.number_input(f"{ref_y} 中班人數", value=data["prev_m"], min_value=0)
     
-    edited_df = st.data_editor(
-        st.session_state['sim_data_store'][cal_y],
-        column_config={
-            "年段": st.column_config.TextColumn(disabled=True),
-            "法規師生比 (1:N)": st.column_config.NumberColumn(disabled=True, format="1 : %d"),
-            "模擬學生數 (人)": st.column_config.NumberColumn(min_value=0, step=1, required=True, help="可輸入假設人數"),
-        },
-        hide_index=True,
-        use_container_width=True,
-        key=f"sim_editor_{cal_y}"
-    )
-    
-    st.session_state['sim_data_store'][cal_y] = edited_df
+    # 計算直升人數
+    # 前幼 -> 今小, 前小 -> 今中, 前中 -> 今大
+    rising_students = data["prev_t"] + data["prev_s"] + data["prev_m"]
 
-    # 4. 即時計算邏輯 (師資)
-    st.divider()
-    st.markdown("### 📊 師資需求計算")
-    
-    # 資料準備
-    row_d = edited_df[edited_df["年段"] == "0-2歲 (托嬰)"].iloc[0]
-    row_t = edited_df[edited_df["年段"] == "2-3歲 (幼幼)"].iloc[0]
-    # 混齡計算核心：將小中大的模擬人數加總
-    df_mix = edited_df[edited_df["年段"].str.contains("小班|中班|大班")]
-    total_mix_students = df_mix["模擬學生數 (人)"].sum()
-    mix_ratio = df_mix.iloc[0]["法規師生比 (1:N)"] 
-    
-    req_d = math.ceil(row_d["模擬學生數 (人)"] / row_d["法規師生比 (1:N)"])
-    req_t = math.ceil(row_t["模擬學生數 (人)"] / row_t["法規師生比 (1:N)"])
-    req_m = math.ceil(total_mix_students / mix_ratio)
-
-    c_res1, c_res2, c_res3 = st.columns(3)
-    c_res1.metric("🍼 托嬰 (0-2)", f"{req_d} 師", help=f"學生 {row_d['模擬學生數 (人)']} 人")
-    c_res2.metric("🐥 幼幼 (2-3)", f"{req_t} 師", help=f"學生 {row_t['模擬學生數 (人)']} 人 (不可混齡)")
-    c_res3.metric("🐘 混齡 (3-6)", f"{req_m} 師", help=f"小+中+大 共 {total_mix_students} 人 / 師生比 1:{mix_ratio}")
-
-    # 5. 跨學年升班預演 (Promotion Simulator) - 聚焦於幼幼->小班 & 總量檢核
     st.markdown("---")
-    st.markdown(f"### 📈 {cal_y+1} 學年 升班缺額推演")
+    st.subheader(f"Step 2: 設定 {cal_y} 學年 (預估年) 目標與計算")
     
-    c_sim1, c_sim2 = st.columns(2)
+    # 左側：混齡區塊 (3-6歲)
+    col_mix, col_t = st.columns(2)
     
-    # 左側：幼幼升小班 (最關鍵的轉折點)
-    with c_sim1:
-        st.info("🅰️ **幼幼班 $\\to$ 小班 缺額檢核**")
-        curr_t_count = row_t["模擬學生數 (人)"]
-        st.write(f"本屆幼幼班： **{curr_t_count}** 人")
-        st.markdown("⬇️ (直升小班)")
+    with col_mix:
+        st.markdown("### 🐘 3-6歲 (小中大) 混齡區")
+        st.write(f"預計直升舊生： **{rising_students}** 人")
         
-        target_small = st.number_input(f"{cal_y+1} 學年【小班】預計只收多少人?", value=30, step=1, key="cap_s")
-        gap_small = target_small - curr_t_count
+        data["target_mixed"] = st.number_input(f"{cal_y} 學年【小中大】核定總名額", value=data["target_mixed"])
         
-        if gap_small > 0: 
-            st.success(f"👉 還有 **{gap_small}** 個名額，可對外招收新生。")
-        elif gap_small == 0: 
-            st.warning("✅ 剛好滿額，不需對外招生。")
-        else: 
-            st.error(f"🚨 超收 **{abs(gap_small)}** 人！需在幼幼班階段控管人數。")
+        # 缺額計算
+        gap_mixed = data["target_mixed"] - rising_students
+        
+        # 師資計算
+        ratio_mix = 12 if cal_y >= 115 else 15
+        teachers_mix = math.ceil(data["target_mixed"] / ratio_mix)
+        
+        st.markdown(f"""
+        <div class="metric-box">
+            <h4>還需招收</h4>
+            <h2 style="color: {'green' if gap_mixed >= 0 else 'red'}">{gap_mixed} 人</h2>
+            <hr>
+            <h4>所需師資 (1:{ratio_mix})</h4>
+            <h2>{teachers_mix} 位</h2>
+        </div>
+        """, unsafe_allow_html=True)
 
-    # 右側：3-6歲總量檢核 (混班概念)
-    with c_sim2:
-        st.info("🅱️ **3-6歲 (小中大) 總額檢核**")
-        # 計算明年升上去的人：(現在幼幼)+(現在小班)+(現在中班) -> 明年的 小+中+大
-        # 注意：不包含現在的大班(因為畢業了)
-        curr_s_count = df_mix[df_mix["年段"]=="3-4歲 (小班)"].iloc[0]["模擬學生數 (人)"]
-        curr_m_count = df_mix[df_mix["年段"]=="4-5歲 (中班)"].iloc[0]["模擬學生數 (人)"]
+    # 右側：幼幼區塊 (2-3歲) - 獨立計算
+    with col_t:
+        st.markdown("### 🐥 2-3歲 (幼幼) 獨立區")
+        # 幼幼班全是新生 (假設托嬰不直升或另外算，這裡單純算幼幼編制)
+        data["target_t"] = st.number_input(f"{cal_y} 學年【幼幼班】預計招收名額", value=data["target_t"])
         
-        next_year_existing = curr_t_count + curr_s_count + curr_m_count
+        # 師資計算
+        ratio_t = 8
+        teachers_t = math.ceil(data["target_t"] / ratio_t)
         
-        st.write(f"明年舊生直升總數： **{next_year_existing}** 人 (原幼/小/中)")
-        
-        total_cap_36 = st.number_input(f"{cal_y+1} 學年【小中大】核定總人數?", value=90, step=1, key="cap_total_36")
-        
-        gap_total = total_cap_36 - next_year_existing
-        
-        if gap_total > 0:
-            st.markdown(f"### 🟢 全園尚可招收： **{gap_total}** 人")
-            st.caption("(含小班新生與中大班插班生)")
-        else:
-            st.markdown(f"### 🔴 全園超收： **{abs(gap_total)}** 人")
+        st.markdown(f"""
+        <div class="metric-box">
+            <h4>預計招收</h4>
+            <h2 style="color: green">{data["target_t"]} 人</h2>
+            <hr>
+            <h4>所需師資 (1:{ratio_t})</h4>
+            <h2>{teachers_t} 位</h2>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    st.caption(f"總結：{cal_y} 學年度全園需聘 **{teachers_mix + teachers_t}** 位老師 (不含托嬰)。")
