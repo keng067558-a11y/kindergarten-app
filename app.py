@@ -8,7 +8,7 @@ import math
 # ==========================================
 st.set_page_config(page_title="新生與經費管理系統", layout="wide", page_icon="🏫")
 
-# 嘗試匯入 gspread (容錯模式)
+# 嘗試匯入 gspread (容錯模式：若無安裝也不會當機)
 try:
     import gspread
     from oauth2client.service_account import ServiceAccountCredentials
@@ -20,9 +20,11 @@ except ImportError:
 try:
     from streamlit_keyup import st_keyup
 except ImportError:
+    # 若無安裝，使用標準 text_input 替代
     def st_keyup(label, placeholder=None, key=None):
         return st.text_input(label, placeholder=placeholder, key=key)
 
+# 自訂 CSS 樣式
 st.markdown("""
 <style>
     .stApp { font-family: "Microsoft JhengHei", sans-serif; }
@@ -35,7 +37,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# 定義全域新的狀態選項
+# 定義全域新的狀態選項 (簡化版)
 NEW_STATUS_OPTIONS = ["預約參觀", "排隊等待", "確認入學", "確定不收"]
 
 # ==========================================
@@ -45,6 +47,7 @@ SHEET_NAME = 'kindergarten_db'
 LOCAL_CSV = 'kindergarten_local_db.csv'
 
 def check_password():
+    """簡單的密碼驗證機制"""
     if "password_correct" not in st.session_state: st.session_state.password_correct = False
     if not st.session_state.password_correct:
         c1, c2, c3 = st.columns([1, 2, 1])
@@ -61,6 +64,7 @@ if not check_password(): st.stop()
 
 @st.cache_resource
 def get_gsheet_client():
+    """連線 Google Sheets"""
     if not HAS_GSPREAD: return None
     try:
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
@@ -76,6 +80,7 @@ def connect_to_gsheets_students():
 
 @st.cache_data(ttl=300)
 def load_registered_data():
+    """讀取資料 (優先讀取 Google Sheets，失敗則讀取 CSV，再失敗則建立空表)"""
     sheet = connect_to_gsheets_students()
     df = pd.DataFrame()
     if sheet:
@@ -88,6 +93,7 @@ def load_registered_data():
         try: df = pd.read_csv(LOCAL_CSV)
         except: df = pd.DataFrame(columns=['報名狀態', '聯繫狀態', '登記日期', '幼兒姓名', '家長稱呼', '電話', '幼兒生日', '預計入學資訊', '推薦人', '備註', '重要性'])
 
+    # 資料清洗與預設值填充
     df = df.fillna("")
     if '電話' in df.columns:
         df['電話'] = df['電話'].astype(str).str.strip().apply(lambda x: '0' + x if len(x) == 9 and x.startswith('9') else x)
@@ -97,9 +103,10 @@ def load_registered_data():
     return df
 
 def sync_data_to_gsheets(new_df):
+    """將資料同步回 Google Sheets 與本地 CSV"""
     try:
         save_df = new_df.copy()
-        # 清理暫存欄位
+        # 清理暫存欄位 (這些欄位不需要存入資料庫)
         for c in ['is_contacted', 'original_index', 'sort_val', 'sort_temp']: 
             if c in save_df.columns: save_df = save_df.drop(columns=[c])
         
@@ -119,7 +126,7 @@ def sync_data_to_gsheets(new_df):
             except: pass 
 
         save_df.to_csv(LOCAL_CSV, index=False)
-        load_registered_data.clear() 
+        load_registered_data.clear() # 清除快取，確保下次讀取最新資料
         return True
     except Exception as e:
         st.error(f"儲存錯誤: {e}")
@@ -129,7 +136,7 @@ def sync_data_to_gsheets(new_df):
 # 2. 核心計算邏輯
 # ==========================================
 def roc_date_input(label, default_date=None, key_suffix=""):
-    # 這是舊有的民國選單，保留給習慣用的地方
+    """民國日期選擇器"""
     st.write(f"**{label} (民國)**")
     c1, c2, c3 = st.columns([1, 1, 1])
     if default_date is None: default_date = date.today()
@@ -144,9 +151,10 @@ def roc_date_input(label, default_date=None, key_suffix=""):
 def to_roc_str(d): return f"{d.year-1911}/{d.month:02d}/{d.day:02d}"
 
 def get_grade_for_year(birth_date, target_roc_year):
+    """計算指定學年的年級 (依據 9/2 分界)"""
     if not birth_date: return "未知"
     by_roc = birth_date.year - 1911
-    # 學制分界：9月2日
+    # 學制分界：9月2日 (含) 以後出生算下一年
     offset = 1 if (birth_date.month > 9) or (birth_date.month == 9 and birth_date.day >= 2) else 0
     age = target_roc_year - by_roc - offset
     if age < 2: return "托嬰中心"
@@ -157,8 +165,10 @@ def get_grade_for_year(birth_date, target_roc_year):
     return "畢業/超齡"
 
 def calculate_admission_roadmap(dob):
+    """計算未來幾年的入學規劃"""
     today = date.today()
     cur_roc = today.year - 1911
+    # 若現在是 1-7 月，學年要算前一年 (例如 2024/5 是 112 學年下學期)
     if today.month < 8: cur_roc -= 1
     roadmap = []
     for i in range(6): 
@@ -168,7 +178,7 @@ def calculate_admission_roadmap(dob):
     return roadmap if roadmap else ["年齡不符"]
 
 # ==========================================
-# 3. 頁面邏輯 (狀態與Callback)
+# 3. 暫存與提交邏輯
 # ==========================================
 if 'temp_children' not in st.session_state: st.session_state.temp_children = []
 if 'msg_error' not in st.session_state: st.session_state['msg_error'] = None
@@ -178,6 +188,7 @@ if st.session_state['msg_error']:
     st.session_state['msg_error'] = None
 
 def add_child_cb():
+    """將單筆資料加入暫存區"""
     y, m, d = st.session_state.get("y_add", 112), st.session_state.get("m_add", 1), st.session_state.get("d_add", 1)
     try: dob = date(y+1911, m, d)
     except: dob = date.today()
@@ -185,15 +196,17 @@ def add_child_cb():
     st.session_state.temp_children.append({
         "幼兒姓名": st.session_state.get("input_c_name", "") or "(未填)",
         "幼兒生日": to_roc_str(dob),
-        "報名狀態": "預約參觀",
+        "報名狀態": "預約參觀", # 預設狀態
         "預計入學資訊": plans[0] if plans else "待確認",
         "備註": st.session_state.get("input_note", ""),
         "重要性": "中"
     })
+    # 清空輸入欄位
     st.session_state.input_c_name = ""
     st.session_state.input_note = ""
 
 def submit_all_cb():
+    """將暫存區資料寫入資料庫"""
     if not st.session_state.temp_children: return
     p_name, phone = st.session_state.input_p_name, st.session_state.input_phone
     if not p_name or not phone: st.session_state['msg_error'] = "❌ 家長與電話必填"; return
@@ -222,10 +235,12 @@ st.title("🏫 幼兒園新生管理系統")
 with st.spinner("載入資料庫..."):
     df = load_registered_data()
 
-# 移除「廠商發票管理」
+# 選單 (已移除廠商發票管理)
 menu = st.sidebar.radio("功能導航", ["👶 新增報名", "📂 資料管理中心", "🎓 學年快速查詢", "📅 未來入學預覽", "👩‍🏫 師資人力預估"])
 
-# --- 頁面 1: 新增 ---
+# ------------------------------------------
+# 頁面 1: 新增報名
+# ------------------------------------------
 if menu == "👶 新增報名":
     st.header("📝 新生報名登記")
     c1, c2 = st.columns(2)
@@ -252,7 +267,9 @@ if menu == "👶 新增報名":
                 st.rerun()
         st.button("✅ 確認送出", type="primary", on_click=submit_all_cb, use_container_width=True)
 
-# --- 頁面 2: 資料管理 (卡片式 + 狀態分組 + 修正後選項) ---
+# ------------------------------------------
+# 頁面 2: 資料管理中心 (卡片式 + 狀態分組)
+# ------------------------------------------
 elif menu == "📂 資料管理中心":
     st.header("📂 資料管理中心")
     col_search, col_dl = st.columns([4, 1])
@@ -280,13 +297,13 @@ elif menu == "📂 資料管理中心":
                 "❌ 確定不收": ["確定不收"]
             }
             
-            # 定義目前系統認定的所有狀態
+            # 定義目前系統認定的所有狀態 (用於過濾 catch-all)
             known_list = ["預約參觀", "排隊等待", "確認入學", "確定不收"]
 
             # 依序渲染每個區塊
             for group_name, status_list in status_groups.items():
                 if group_name == "⏳ 排隊等待 (含其他)":
-                    # 包含「排隊等待」以及所有「非標準選項」(例如舊資料的 考慮中/已安排/放棄)
+                    # 包含「排隊等待」以及所有「非標準選項」(例如舊資料的 考慮中/已安排/放棄/空白)
                     sub_df = tdf[tdf['報名狀態'].isin(status_list) | ~tdf['報名狀態'].isin(known_list)]
                 else:
                     sub_df = tdf[tdf['報名狀態'].isin(status_list)]
@@ -319,11 +336,9 @@ elif menu == "📂 資料管理中心":
                                 # 狀態 (自動處理舊資料對應)
                                 cur_stat = r['報名狀態']
                                 # 如果目前狀態不在新選項中，UI 預設顯示「排隊等待」，但原資料不變直到使用者按下儲存
-                                ui_stat_idx = 0 # 預設排隊等待 (index 1)
+                                ui_stat_idx = NEW_STATUS_OPTIONS.index("排隊等待")
                                 if cur_stat in NEW_STATUS_OPTIONS:
                                     ui_stat_idx = NEW_STATUS_OPTIONS.index(cur_stat)
-                                else:
-                                    ui_stat_idx = NEW_STATUS_OPTIONS.index("排隊等待")
                                 
                                 r2.selectbox("狀態", NEW_STATUS_OPTIONS, index=ui_stat_idx, key=f"s_{uk}", label_visibility="collapsed")
 
@@ -352,7 +367,7 @@ elif menu == "📂 資料管理中心":
                                 with b1: st.caption(f"登記日: {r['登記日期']}")
                                 with b2: st.checkbox("刪除", key=f"del_{uk}")
 
-        # === 儲存邏輯 ===
+        # === 儲存邏輯 (使用返回值判斷，確保表單資料已更新) ===
         def process_save_status(tdf, key_pfx):
             with st.spinner("正在比對並儲存資料..."):
                 fulldf = load_registered_data().copy()
@@ -363,11 +378,13 @@ elif menu == "📂 資料管理中心":
                     oid = r['original_index']
                     uk = f"{key_pfx}_{oid}"
                     
+                    # 1. 檢查刪除
                     if st.session_state.get(f"del_{uk}"):
                         indices_to_drop.append(oid)
                         changes_made = True
                         continue 
                     
+                    # 2. 讀取 Widget 值
                     new_contact = st.session_state.get(f"c_{uk}")
                     new_status = st.session_state.get(f"s_{uk}")
                     new_plan = st.session_state.get(f"p_{uk}")
@@ -378,6 +395,7 @@ elif menu == "📂 資料管理中心":
                         s = str(v).strip()
                         return "" if s == 'nan' else s
 
+                    # 3. 比對變更
                     if new_contact is not None:
                         ncon_str = "已聯繫" if new_contact else "未聯繫"
                         if strict_val(fulldf.at[oid, '聯繫狀態']) != strict_val(ncon_str):
@@ -399,6 +417,7 @@ elif menu == "📂 資料管理中心":
                         if strict_val(fulldf.at[oid, '重要性']) != strict_val(new_imp):
                             fulldf.at[oid, '重要性'] = new_imp; changes_made = True
 
+                # 4. 執行變更
                 if indices_to_drop: fulldf = fulldf.drop(indices_to_drop)
 
                 if changes_made:
@@ -439,7 +458,9 @@ elif menu == "📂 資料管理中心":
                 if submitted_t3: process_save_status(disp, "t3")
             else: st.info("資料庫是空的。")
 
-# --- 頁面 2.5: 學年快速查詢 (新增西元查詢與對照表) ---
+# ------------------------------------------
+# 頁面 3: 學年快速查詢 (新增西元查詢與對照表)
+# ------------------------------------------
 elif menu == "🎓 學年快速查詢":
     st.header("🎓 學年段快速查詢")
     
@@ -484,7 +505,7 @@ elif menu == "🎓 學年快速查詢":
         st.subheader("📊 各年份出生兒童入學對照表")
         st.caption("依據 9/2 分界計算，僅供參考。")
         
-        # 動態產生對照表
+        # 動態產生對照表 (未來 4 年)
         cur_roc_year = date.today().year - 1911
         check_years = [cur_roc_year, cur_roc_year+1, cur_roc_year+2, cur_roc_year+3]
         
@@ -494,7 +515,7 @@ elif menu == "🎓 學年快速查詢":
         for dy in range(0, 8):
             b_year_ad = base_y - dy
             b_year_roc = b_year_ad - 1911
-            # 假設生日為 9/1 (大)
+            # 假設生日為 9/1 (學年間的大數)
             sample_date = date(b_year_ad, 9, 1)
             
             row_data = {
@@ -506,9 +527,13 @@ elif menu == "🎓 學年快速查詢":
             birth_rows.append(row_data)
         
         df_ref = pd.DataFrame(birth_rows)
-        st.dataframe(df_ref, use_container_width=True, hide_index=True)
+        # 讓學年欄位排在最後
+        cols = ["西元出生", "民國出生"] + [f"{y}學年" for y in check_years]
+        st.dataframe(df_ref[cols], use_container_width=True, hide_index=True)
 
-# --- 頁面 4: 未來預覽 (更新篩選邏輯) ---
+# ------------------------------------------
+# 頁面 4: 未來入學預覽 (排除確定不收)
+# ------------------------------------------
 elif menu == "📅 未來入學預覽":
     st.header("📅 未來入學名單預覽")
     cur_y = date.today().year - 1911
@@ -612,40 +637,133 @@ elif menu == "📅 未來入學預覽":
         render_board(col_t, "🐥 幼幼班", roster["幼幼班"]["conf"])
         render_board(col_d, "🍼 托嬰中心", roster["托嬰中心"]["conf"])
         
-# --- 頁面 5: 師資預估 ---
+# ------------------------------------------
+# 頁面 5: 師資人力預估 (混班計算 + 現有比對)
+# ------------------------------------------
 elif menu == "👩‍🏫 師資人力預估":
     st.header("📊 師資人力預估")
-    cal_y = st.number_input("預估學年", value=date.today().year - 1911 + 1)
     
-    default_ratio = 12 if cal_y >= 115 else 15
-    if cal_y >= 115: st.caption("ℹ️ 115學年度起準公幼師生比調整為 **1:12**。")
+    # 1. 設定預估學年
+    c_y1, c_y2 = st.columns([1, 3])
+    cal_y = c_y1.number_input("📅 預估學年", value=date.today().year - 1911 + 1)
+    c_y2.info(f"正在計算 **{cal_y} 學年度** 的人力需求（系統自動依生日推算屆時年段）")
 
-    with st.expander("⚙️ 師生比參數設定", expanded=True):
-        c1, c2, c3 = st.columns(3)
-        r_d = c1.number_input("托嬰 (0-2歲) 1:", 5)
-        r_t = c2.number_input("幼幼 (2-3歲) 1:", 8)
-        r_k = c3.number_input("小中大 (3-6歲) 1:", value=default_ratio)
-    
-    cts = {k: {"c": 0, "w": 0} for k in ["托嬰中心", "幼幼班", "小班", "中班", "大班"]}
+    # 2. 參數設定 (師生比 + 現有人力)
+    with st.expander("⚙️ 參數設定：師生比與現有師資", expanded=True):
+        st.caption("請輸入目前的「合格教保服務人員」數量，系統將自動計算缺額。")
+        
+        # 師生比法規參考
+        default_ratio_k = 12 if cal_y >= 115 else 15
+        
+        col_set1, col_set2, col_set3 = st.columns(3)
+        
+        # --- 0-2歲 (托嬰) ---
+        with col_set1:
+            st.markdown("#### 🍼 0-2 歲 (托嬰)")
+            r_d = st.number_input("師生比 1:", value=5, key="r_d")
+            teacher_d = st.number_input("現有老師數", value=2, min_value=0, key="t_d")
+            
+        # --- 2-3歲 (幼幼) ---
+        with col_set2:
+            st.markdown("#### 🐥 2-3 歲 (幼幼)")
+            r_t = st.number_input("師生比 1:", value=8, key="r_t")
+            teacher_t = st.number_input("現有老師數", value=2, min_value=0, key="t_t")
+            
+        # --- 3-6歲 (混齡) ---
+        with col_set3:
+            st.markdown("#### 🐘 3-6 歲 (混齡)")
+            st.caption("小/中/大班可混齡編班")
+            r_k = st.number_input("師生比 1:", value=default_ratio_k, key="r_k")
+            teacher_k = st.number_input("現有老師數", value=6, min_value=0, key="t_k")
+
+    st.divider()
+
+    # 3. 資料計算
+    cats = {
+        "0-2歲": {"conf": 0, "pend": 0, "status": "獨立班"},
+        "2-3歲": {"conf": 0, "pend": 0, "status": "獨立班"},
+        "3-6歲": {"conf": 0, "pend": 0, "status": "混齡編班"}
+    }
+
+    # 遍歷資料庫進行歸類
     for _, r in df.iterrows():
         try:
-            # 排除不收
+            # 排除確定不收
             if "確定不收" in str(r['報名狀態']): continue
 
             gr = None
-            if f"{cal_y} 學年" in str(r['預計入學資訊']): gr = str(r['預計入學資訊']).split("-")[1].strip()
+            if f"{cal_y} 學年" in str(r['預計入學資訊']):
+                gr = str(r['預計入學資訊']).split("-")[1].strip()
             if not gr:
                 dob = date(int(str(r['幼兒生日']).split('/')[0])+1911, int(str(r['幼兒生日']).split('/')[1]), int(str(r['幼兒生日']).split('/')[2]))
                 gr = get_grade_for_year(dob, cal_y)
-            
-            if gr in cts:
-                if "確認入學" in str(r['報名狀態']): cts[gr]["c"] += 1
-                else: cts[gr]["w"] += 1
+
+            is_conf = "確認入學" in str(r['報名狀態'])
+            count_key = "conf" if is_conf else "pend"
+
+            if gr == "托嬰中心":
+                cats["0-2歲"][count_key] += 1
+            elif gr == "幼幼班":
+                cats["2-3歲"][count_key] += 1
+            elif gr in ["小班", "中班", "大班"]:
+                cats["3-6歲"][count_key] += 1
+                
         except: pass
 
-    data = []
-    for g, rat in [("托嬰中心", r_d), ("幼幼班", r_t), ("小班", r_k), ("中班", r_k), ("大班", r_k)]:
-        c, w = cts[g]["c"], cts[g]["w"]
-        data.append({"班級": g, "師生比": f"1:{rat}", "確認入學": c, "排隊/潛在": w, 
-                     "需老師(確)": math.ceil(c/rat), "需老師(含排)": math.ceil((c+w)/rat)})
-    st.dataframe(pd.DataFrame(data), use_container_width=True)
+    # 4. 顯示結果卡片
+    st.subheader("📊 人力需求預估分析")
+    
+    def render_staff_card(title, group_key, ratio, current_teachers):
+        data = cats[group_key]
+        num_conf = data["conf"]
+        num_pend = data["pend"]
+        num_total = num_conf + num_pend
+        
+        # 核心計算：無條件進位
+        req_conf = math.ceil(num_conf / ratio)       
+        req_total = math.ceil(num_total / ratio)     
+        
+        # 缺額計算
+        gap_conf = current_teachers - req_conf
+        gap_total = current_teachers - req_total
+        
+        with st.container(border=True):
+            st.markdown(f"### {title}")
+            
+            c1, c2, c3 = st.columns(3)
+            c1.metric("✅ 確認學生", f"{num_conf} 人")
+            c2.metric("⏳ 含潛在學生", f"{num_total} 人")
+            c3.metric("📏 計算師生比", f"1 : {ratio}")
+            
+            st.markdown("---")
+            
+            # 情境 A
+            st.markdown("**情境 A：僅考慮「確認入學」**")
+            k1, k2 = st.columns([2, 3])
+            k1.write(f"需要老師： **{req_conf}** 位")
+            if gap_conf < 0:
+                k2.error(f"⚠️ 還缺 {abs(gap_conf)} 位")
+            else:
+                k2.success(f"👌 人力充裕 (餘 {gap_conf} 位)")
+            
+            # 情境 B
+            st.markdown("**情境 B：若「潛在學生」全收**")
+            k3, k4 = st.columns([2, 3])
+            k3.write(f"需要老師： **{req_total}** 位")
+            if gap_total < 0:
+                k4.error(f"🚨 還缺 {abs(gap_total)} 位")
+            else:
+                k4.success(f"👌 人力充裕 (餘 {gap_total} 位)")
+
+    col_g1, col_g2, col_g3 = st.columns(3)
+    
+    with col_g1:
+        render_staff_card("🍼 0-2 歲 (托嬰)", "0-2歲", r_d, teacher_d)
+    
+    with col_g2:
+        render_staff_card("🐥 2-3 歲 (幼幼)", "2-3歲", r_t, teacher_t)
+        
+    with col_g3:
+        render_staff_card("🐘 3-6 歲 (混齡)", "3-6歲", r_k, teacher_k)
+        
+    st.info("💡 **計算說明**：此系統採「混齡計算」模擬 3-6 歲人力需求。若您實際上採「分班教學」，且各班人數未滿額，實際所需老師可能會比上述計算更多。")
