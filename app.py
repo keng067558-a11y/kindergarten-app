@@ -300,7 +300,7 @@ if menu == "👶 新增報名":
                 st.rerun()
         st.button("✅ 確認送出", type="primary", on_click=submit_all_cb, use_container_width=True)
 
-# --- 頁面 2: 資料管理 (重構版：卡片式 + 狀態分組) ---
+# --- 頁面 2: 資料管理 (修正版：解決儲存無效問題) ---
 elif menu == "📂 資料管理中心":
     st.header("📂 資料管理中心")
     col_search, col_dl = st.columns([4, 1])
@@ -392,10 +392,11 @@ elif menu == "📂 資料管理中心":
                                 with b1: st.caption(f"登記日: {r['登記日期']}")
                                 with b2: st.checkbox("刪除", key=f"del_{uk}")
 
-        # === 儲存邏輯 ===
+        # === 儲存邏輯 (修正版：解決表單更新順序問題) ===
         def process_save_status(tdf, key_pfx):
-            with st.spinner("正在更新資料庫..."):
-                fulldf = load_registered_data()
+            with st.spinner("正在比對並儲存資料..."):
+                # 重新讀取原始資料，確保比對基準正確
+                fulldf = load_registered_data().copy()
                 changes_made = False
                 indices_to_drop = [] 
                 
@@ -403,52 +404,71 @@ elif menu == "📂 資料管理中心":
                     oid = r['original_index']
                     uk = f"{key_pfx}_{oid}"
                     
+                    # 1. 檢查刪除
                     if st.session_state.get(f"del_{uk}"):
                         indices_to_drop.append(oid)
                         changes_made = True
                         continue 
                     
+                    # 2. 獲取表單新值
                     new_contact = st.session_state.get(f"c_{uk}")
                     new_status = st.session_state.get(f"s_{uk}")
                     new_plan = st.session_state.get(f"p_{uk}")
                     new_note = st.session_state.get(f"n_{uk}")
                     new_imp = st.session_state.get(f"imp_{uk}")
                     
-                    def strict_val(v): return "" if str(v).strip() == 'nan' else str(v).strip()
+                    # 嚴格比對函數 (解決 nan != "" 的問題)
+                    def strict_val(v): 
+                        s = str(v).strip()
+                        return "" if s == 'nan' else s
 
+                    # 3. 逐欄比對
                     if new_contact is not None:
                         ncon_str = "已聯繫" if new_contact else "未聯繫"
                         if strict_val(fulldf.at[oid, '聯繫狀態']) != strict_val(ncon_str):
                             fulldf.at[oid, '聯繫狀態'] = ncon_str; changes_made = True
                     
-                    if new_status is not None and strict_val(fulldf.at[oid, '報名狀態']) != strict_val(new_status):
-                        fulldf.at[oid, '報名狀態'] = new_status; changes_made = True
+                    if new_status is not None:
+                        if strict_val(fulldf.at[oid, '報名狀態']) != strict_val(new_status):
+                            fulldf.at[oid, '報名狀態'] = new_status; changes_made = True
                         
-                    if new_plan is not None and strict_val(fulldf.at[oid, '預計入學資訊']) != strict_val(new_plan):
-                        fulldf.at[oid, '預計入學資訊'] = new_plan; changes_made = True
+                    if new_plan is not None:
+                        if strict_val(fulldf.at[oid, '預計入學資訊']) != strict_val(new_plan):
+                            fulldf.at[oid, '預計入學資訊'] = new_plan; changes_made = True
                         
-                    if new_note is not None and strict_val(fulldf.at[oid, '備註']) != strict_val(new_note):
-                        fulldf.at[oid, '備註'] = new_note; changes_made = True
+                    if new_note is not None:
+                        if strict_val(fulldf.at[oid, '備註']) != strict_val(new_note):
+                            fulldf.at[oid, '備註'] = new_note; changes_made = True
                         
-                    if new_imp is not None and strict_val(fulldf.at[oid, '重要性']) != strict_val(new_imp):
-                        fulldf.at[oid, '重要性'] = new_imp; changes_made = True
+                    if new_imp is not None:
+                        if strict_val(fulldf.at[oid, '重要性']) != strict_val(new_imp):
+                            fulldf.at[oid, '重要性'] = new_imp; changes_made = True
 
-                if indices_to_drop: fulldf = fulldf.drop(indices_to_drop)
+                # 4. 執行變更
+                if indices_to_drop: 
+                    fulldf = fulldf.drop(indices_to_drop)
 
                 if changes_made:
                     if sync_data_to_gsheets(fulldf):
-                        st.toast("✅ 資料已成功更新！", icon="💾")
+                        st.toast("✅ 資料已成功更新並儲存！", icon="💾")
                         st.rerun() 
+                    else:
+                        st.error("儲存失敗，請檢查網路或權限。")
                 else:
-                    st.toast("沒有偵測到變更", icon="ℹ️")
+                    st.toast("系統沒有偵測到任何資料變更。", icon="ℹ️")
 
+        # === 渲染頁面與觸發器 (修正：先 render，再判斷 button) ===
         with t1:
             target_data = disp[~disp['is_contacted']]
             if not target_data.empty:
                 with st.form("form_t1"):
                     render_status_cards(target_data, "t1")
                     st.write("")
-                    st.form_submit_button("💾 儲存所有變更", type="primary", use_container_width=True, on_click=lambda: process_save_status(target_data, "t1"))
+                    # 重要修正：不使用 on_click，改用返回值判斷
+                    submitted_t1 = st.form_submit_button("💾 儲存所有變更", type="primary", use_container_width=True)
+                
+                if submitted_t1:
+                    process_save_status(target_data, "t1")
             else: st.info("🎉 太棒了！目前沒有待聯繫的名單。")
 
         with t2:
@@ -457,7 +477,10 @@ elif menu == "📂 資料管理中心":
                 with st.form("form_t2"):
                     render_status_cards(target_data, "t2")
                     st.write("")
-                    st.form_submit_button("💾 儲存所有變更", type="primary", use_container_width=True, on_click=lambda: process_save_status(target_data, "t2"))
+                    submitted_t2 = st.form_submit_button("💾 儲存所有變更", type="primary", use_container_width=True)
+                
+                if submitted_t2:
+                    process_save_status(target_data, "t2")
             else: st.info("目前沒有已聯繫的資料。")
 
         with t3:
@@ -465,7 +488,10 @@ elif menu == "📂 資料管理中心":
                 with st.form("form_t3"):
                     render_status_cards(disp, "t3")
                     st.write("")
-                    st.form_submit_button("💾 儲存所有變更", type="primary", use_container_width=True, on_click=lambda: process_save_status(disp, "t3"))
+                    submitted_t3 = st.form_submit_button("💾 儲存所有變更", type="primary", use_container_width=True)
+                
+                if submitted_t3:
+                    process_save_status(disp, "t3")
             else: st.info("資料庫是空的。")
 
 # --- 頁面 2.5: 學年快速查詢 ---
