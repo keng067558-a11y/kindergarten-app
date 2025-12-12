@@ -300,11 +300,14 @@ elif menu == "📂 資料管理中心":
                             uk = f"{key_pfx}_{oid}"
                             
                             with st.container(border=True):
-                                top_c1, top_c2 = st.columns([3, 1])
-                                priority_icon = {"優": "🔴", "中": "🟡", "差": "⚪"}.get(r['重要性'], "⚪")
-                                top_c1.markdown(f"**{priority_icon} {r['幼兒姓名']}** | {r['幼兒生日']} | {r['家長稱呼']}")
-                                top_c2.caption(f"📞 {r['電話']}")
+                                # 第一列：編輯基本資料 (姓名、生日、家長、電話)
+                                c_edit1, c_edit2, c_edit3, c_edit4 = st.columns(4)
+                                c_edit1.text_input("幼兒姓名", value=r['幼兒姓名'], key=f"name_{uk}")
+                                c_edit2.text_input("生日 (民國/月/日)", value=r['幼兒生日'], key=f"dob_{uk}")
+                                c_edit3.text_input("家長稱呼", value=r['家長稱呼'], key=f"pname_{uk}")
+                                c_edit4.text_input("電話", value=r['電話'], key=f"phone_{uk}")
 
+                                # 第二列：編輯狀態與進階資料
                                 r1, r2, r3, r4 = st.columns([1.2, 1.2, 1.5, 1])
                                 r1.checkbox("已聯繫", r['is_contacted'], key=f"c_{uk}")
                                 
@@ -326,8 +329,11 @@ elif menu == "📂 資料管理中心":
                                 r3.selectbox("入學年段", plans, index=p_idx, key=f"p_{uk}", label_visibility="collapsed")
                                 r4.selectbox("優先", ["優", "中", "差"], index=["優", "中", "差"].index(r['重要性'] if r['重要性'] in ["優", "中", "差"] else "中"), key=f"imp_{uk}", label_visibility="collapsed")
 
+                                # 第三列：備註
                                 n_val = r['備註'] if str(r['備註'])!='nan' else ""
                                 st.text_area("備註", n_val, key=f"n_{uk}", height=68, placeholder="在此輸入備註...")
+                                
+                                # 底部：資訊與刪除
                                 b1, b2 = st.columns([5, 1])
                                 with b1: st.caption(f"登記日: {r['登記日期']}")
                                 with b2: st.checkbox("刪除", key=f"del_{uk}")
@@ -347,6 +353,12 @@ elif menu == "📂 資料管理中心":
                         changes_made = True
                         continue 
                     
+                    # 讀取所有可編輯欄位
+                    new_name = st.session_state.get(f"name_{uk}")
+                    new_dob = st.session_state.get(f"dob_{uk}")
+                    new_pname = st.session_state.get(f"pname_{uk}")
+                    new_phone = st.session_state.get(f"phone_{uk}")
+                    
                     new_contact = st.session_state.get(f"c_{uk}")
                     new_status = st.session_state.get(f"s_{uk}")
                     new_plan = st.session_state.get(f"p_{uk}")
@@ -354,6 +366,19 @@ elif menu == "📂 資料管理中心":
                     new_imp = st.session_state.get(f"imp_{uk}")
                     
                     def strict_val(v): return "" if str(v).strip()=='nan' else str(v).strip()
+
+                    # 逐一比對
+                    if new_name is not None and strict_val(fulldf.at[oid, '幼兒姓名']) != strict_val(new_name):
+                        fulldf.at[oid, '幼兒姓名'] = new_name; changes_made = True
+                        
+                    if new_dob is not None and strict_val(fulldf.at[oid, '幼兒生日']) != strict_val(new_dob):
+                        fulldf.at[oid, '幼兒生日'] = new_dob; changes_made = True
+                        
+                    if new_pname is not None and strict_val(fulldf.at[oid, '家長稱呼']) != strict_val(new_pname):
+                        fulldf.at[oid, '家長稱呼'] = new_pname; changes_made = True
+                        
+                    if new_phone is not None and strict_val(fulldf.at[oid, '電話']) != strict_val(new_phone):
+                        fulldf.at[oid, '電話'] = new_phone; changes_made = True
 
                     if new_contact is not None:
                         ncon_str = "已聯繫" if new_contact else "未聯繫"
@@ -546,7 +571,7 @@ elif menu == "📅 未來入學預覽":
             with column:
                 st.markdown(f"##### {title} ({len(data)}人)")
                 if data:
-                    disp_df = pd.DataFrame(data)[['家長稱呼', '電話', '備註']]
+                    disp_df = pd.DataFrame(data)[['幼兒姓名', '家長稱呼', '電話', '備註']]
                     st.dataframe(disp_df, hide_index=True, use_container_width=True)
                 else: st.info("尚無名單")
 
@@ -569,6 +594,12 @@ elif menu == "👩‍🏫 招生缺額與師資試算":
     cal_y = st.number_input("📅 預估學年 (目標)", value=date.today().year - 1911 + 1)
     ref_y = cal_y - 1
     
+    # 判斷師生比 (115學年起 3-6歲 1:12)
+    ratio_mix = 12 if cal_y >= 115 else 15
+    ratio_label = "1:12 (新制)" if cal_y >= 115 else "1:15 (舊制)"
+    if cal_y >= 115:
+        st.caption(f"ℹ️ 系統偵測為 **115學年度** 以後，3-6歲師生比自動設定為 **{ratio_label}**。")
+
     # 2. 獲取資料庫預設值 (前一年)
     def get_prev_counts(year):
         c = {"幼幼": 0, "小": 0, "中": 0}
@@ -598,7 +629,7 @@ elif menu == "👩‍🏫 招生缺額與師資試算":
     data = st.session_state['calc_memory'][cal_y]
 
     # 重置按鈕
-    if st.button("🔄 重置為資料庫數據"):
+    if st.button(f"🔄 重置為 {ref_y} 學年資料庫數據"):
         db_data = get_prev_counts(ref_y)
         st.session_state['calc_memory'][cal_y]["prev_t"] = db_data["幼幼"]
         st.session_state['calc_memory'][cal_y]["prev_s"] = db_data["小"]
@@ -631,7 +662,6 @@ elif menu == "👩‍🏫 招生缺額與師資試算":
         gap_mixed = data["target_mixed"] - rising_students
         
         # 師資計算
-        ratio_mix = 12 if cal_y >= 115 else 15
         teachers_mix = math.ceil(data["target_mixed"] / ratio_mix)
         
         st.markdown(f"""
@@ -639,7 +669,7 @@ elif menu == "👩‍🏫 招生缺額與師資試算":
             <h4>還需招收</h4>
             <h2 style="color: {'green' if gap_mixed >= 0 else 'red'}">{gap_mixed} 人</h2>
             <hr>
-            <h4>所需師資 (1:{ratio_mix})</h4>
+            <h4>所需師資 (3-6歲 {ratio_label})</h4>
             <h2>{teachers_mix} 位</h2>
         </div>
         """, unsafe_allow_html=True)
@@ -659,7 +689,7 @@ elif menu == "👩‍🏫 招生缺額與師資試算":
             <h4>預計招收</h4>
             <h2 style="color: green">{data["target_t"]} 人</h2>
             <hr>
-            <h4>所需師資 (1:{ratio_t})</h4>
+            <h4>所需師資 (2-3歲 1:8)</h4>
             <h2>{teachers_t} 位</h2>
         </div>
         """, unsafe_allow_html=True)
