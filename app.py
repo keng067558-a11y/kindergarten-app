@@ -8,7 +8,7 @@ import math
 # ==========================================
 st.set_page_config(page_title="新生與經費管理系統", layout="wide", page_icon="🏫")
 
-# 嘗試匯入 gspread (容錯模式：若無安裝也不會當機)
+# 嘗試匯入 gspread
 try:
     import gspread
     from oauth2client.service_account import ServiceAccountCredentials
@@ -16,15 +16,13 @@ try:
 except ImportError:
     HAS_GSPREAD = False
 
-# 嘗試匯入 st_keyup (搜尋優化)
+# 嘗試匯入 st_keyup
 try:
     from streamlit_keyup import st_keyup
 except ImportError:
-    # 若無安裝，使用標準 text_input 替代
     def st_keyup(label, placeholder=None, key=None):
         return st.text_input(label, placeholder=placeholder, key=key)
 
-# 自訂 CSS 樣式
 st.markdown("""
 <style>
     .stApp { font-family: "Microsoft JhengHei", sans-serif; }
@@ -34,16 +32,10 @@ st.markdown("""
     div[data-testid="stVerticalBlock"] > div[data-testid="stVerticalBlock"] {
         gap: 0.5rem;
     }
-    .metric-card {
-        background-color: #f0f2f6;
-        border-radius: 10px;
-        padding: 15px;
-        margin-bottom: 10px;
-    }
 </style>
 """, unsafe_allow_html=True)
 
-# 定義全域新的狀態選項 (簡化版)
+# 定義全域新的狀態選項
 NEW_STATUS_OPTIONS = ["預約參觀", "排隊等待", "確認入學", "確定不收"]
 
 # ==========================================
@@ -53,7 +45,6 @@ SHEET_NAME = 'kindergarten_db'
 LOCAL_CSV = 'kindergarten_local_db.csv'
 
 def check_password():
-    """簡單的密碼驗證機制"""
     if "password_correct" not in st.session_state: st.session_state.password_correct = False
     if not st.session_state.password_correct:
         c1, c2, c3 = st.columns([1, 2, 1])
@@ -70,7 +61,6 @@ if not check_password(): st.stop()
 
 @st.cache_resource
 def get_gsheet_client():
-    """連線 Google Sheets"""
     if not HAS_GSPREAD: return None
     try:
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
@@ -79,14 +69,12 @@ def get_gsheet_client():
         return gspread.authorize(creds)
     except: return None
 
-# --- 學生資料讀取 ---
 def connect_to_gsheets_students():
     c = get_gsheet_client()
     return c.open(SHEET_NAME).sheet1 if c else None
 
 @st.cache_data(ttl=300)
 def load_registered_data():
-    """讀取資料 (優先讀取 Google Sheets，失敗則讀取 CSV，再失敗則建立空表)"""
     sheet = connect_to_gsheets_students()
     df = pd.DataFrame()
     if sheet:
@@ -99,7 +87,6 @@ def load_registered_data():
         try: df = pd.read_csv(LOCAL_CSV)
         except: df = pd.DataFrame(columns=['報名狀態', '聯繫狀態', '登記日期', '幼兒姓名', '家長稱呼', '電話', '幼兒生日', '預計入學資訊', '推薦人', '備註', '重要性'])
 
-    # 資料清洗與預設值填充
     df = df.fillna("")
     if '電話' in df.columns:
         df['電話'] = df['電話'].astype(str).str.strip().apply(lambda x: '0' + x if len(x) == 9 and x.startswith('9') else x)
@@ -109,10 +96,8 @@ def load_registered_data():
     return df
 
 def sync_data_to_gsheets(new_df):
-    """將資料同步回 Google Sheets 與本地 CSV"""
     try:
         save_df = new_df.copy()
-        # 清理暫存欄位 (這些欄位不需要存入資料庫)
         for c in ['is_contacted', 'original_index', 'sort_val', 'sort_temp']: 
             if c in save_df.columns: save_df = save_df.drop(columns=[c])
         
@@ -132,7 +117,7 @@ def sync_data_to_gsheets(new_df):
             except: pass 
 
         save_df.to_csv(LOCAL_CSV, index=False)
-        load_registered_data.clear() # 清除快取，確保下次讀取最新資料
+        load_registered_data.clear() 
         return True
     except Exception as e:
         st.error(f"儲存錯誤: {e}")
@@ -142,7 +127,6 @@ def sync_data_to_gsheets(new_df):
 # 2. 核心計算邏輯
 # ==========================================
 def roc_date_input(label, default_date=None, key_suffix=""):
-    """民國日期選擇器"""
     st.write(f"**{label} (民國)**")
     c1, c2, c3 = st.columns([1, 1, 1])
     if default_date is None: default_date = date.today()
@@ -157,10 +141,8 @@ def roc_date_input(label, default_date=None, key_suffix=""):
 def to_roc_str(d): return f"{d.year-1911}/{d.month:02d}/{d.day:02d}"
 
 def get_grade_for_year(birth_date, target_roc_year):
-    """計算指定學年的年級 (依據 9/2 分界)"""
     if not birth_date: return "未知"
     by_roc = birth_date.year - 1911
-    # 學制分界：9月2日 (含) 以後出生算下一年
     offset = 1 if (birth_date.month > 9) or (birth_date.month == 9 and birth_date.day >= 2) else 0
     age = target_roc_year - by_roc - offset
     if age < 2: return "托嬰中心"
@@ -171,10 +153,8 @@ def get_grade_for_year(birth_date, target_roc_year):
     return "畢業/超齡"
 
 def calculate_admission_roadmap(dob):
-    """計算未來幾年的入學規劃"""
     today = date.today()
     cur_roc = today.year - 1911
-    # 若現在是 1-7 月，學年要算前一年 (例如 2024/5 是 112 學年下學期)
     if today.month < 8: cur_roc -= 1
     roadmap = []
     for i in range(6): 
@@ -194,7 +174,6 @@ if st.session_state['msg_error']:
     st.session_state['msg_error'] = None
 
 def add_child_cb():
-    """將單筆資料加入暫存區"""
     y, m, d = st.session_state.get("y_add", 112), st.session_state.get("m_add", 1), st.session_state.get("d_add", 1)
     try: dob = date(y+1911, m, d)
     except: dob = date.today()
@@ -202,17 +181,15 @@ def add_child_cb():
     st.session_state.temp_children.append({
         "幼兒姓名": st.session_state.get("input_c_name", "") or "(未填)",
         "幼兒生日": to_roc_str(dob),
-        "報名狀態": "預約參觀", # 預設狀態
+        "報名狀態": "預約參觀",
         "預計入學資訊": plans[0] if plans else "待確認",
         "備註": st.session_state.get("input_note", ""),
         "重要性": "中"
     })
-    # 清空輸入欄位
     st.session_state.input_c_name = ""
     st.session_state.input_note = ""
 
 def submit_all_cb():
-    """將暫存區資料寫入資料庫"""
     if not st.session_state.temp_children: return
     p_name, phone = st.session_state.input_p_name, st.session_state.input_phone
     if not p_name or not phone: st.session_state['msg_error'] = "❌ 家長與電話必填"; return
@@ -241,12 +218,9 @@ st.title("🏫 幼兒園新生管理系統")
 with st.spinner("載入資料庫..."):
     df = load_registered_data()
 
-# 選單 (更新名稱以符合新功能)
 menu = st.sidebar.radio("功能導航", ["👶 新增報名", "📂 資料管理中心", "🎓 學年快速查詢", "📅 未來入學預覽", "👩‍🏫 師資與招生沙盤推演"])
 
-# ------------------------------------------
-# 頁面 1: 新增報名
-# ------------------------------------------
+# --- 頁面 1: 新增 ---
 if menu == "👶 新增報名":
     st.header("📝 新生報名登記")
     c1, c2 = st.columns(2)
@@ -273,9 +247,7 @@ if menu == "👶 新增報名":
                 st.rerun()
         st.button("✅ 確認送出", type="primary", on_click=submit_all_cb, use_container_width=True)
 
-# ------------------------------------------
-# 頁面 2: 資料管理中心 (卡片式 + 狀態分組)
-# ------------------------------------------
+# --- 頁面 2: 資料管理 ---
 elif menu == "📂 資料管理中心":
     st.header("📂 資料管理中心")
     col_search, col_dl = st.columns([4, 1])
@@ -286,27 +258,20 @@ elif menu == "📂 資料管理中心":
         disp = df.copy()
         disp['original_index'] = disp.index
         
-        # 全局搜尋過濾
         if kw: disp = disp[disp.astype(str).apply(lambda x: x.str.contains(kw, case=False)).any(axis=1)]
         disp['is_contacted'] = disp['聯繫狀態'] == '已聯繫'
 
-        # 分頁籤
         t1, t2, t3 = st.tabs(["🔴 待聯繫", "🟢 已聯繫", "📁 全部資料"])
 
-        # === 核心：狀態分類卡片渲染函數 ===
         def render_status_cards(tdf, key_pfx):
-            # 定義新的簡化狀態分類
             status_groups = {
                 "🔥 預約與參觀": ["預約參觀"],
-                "⏳ 排隊等待 (含其他)": ["排隊等待"], # 預設 Catch-all
+                "⏳ 排隊等待 (含其他)": ["排隊等待"], 
                 "✅ 確認入學": ["確認入學"],
                 "❌ 確定不收": ["確定不收"]
             }
-            
-            # 定義目前系統認定的所有狀態 (用於過濾 catch-all)
             known_list = ["預約參觀", "排隊等待", "確認入學", "確定不收"]
 
-            # 依序渲染每個區塊
             for group_name, status_list in status_groups.items():
                 if group_name == "⏳ 排隊等待 (含其他)":
                     sub_df = tdf[tdf['報名狀態'].isin(status_list) | ~tdf['報名狀態'].isin(known_list)]
@@ -315,7 +280,6 @@ elif menu == "📂 資料管理中心":
 
                 if not sub_df.empty:
                     with st.expander(f"{group_name} (共 {len(sub_df)} 筆)", expanded=True):
-                        # 依重要性排序 (優 > 中 > 差)
                         prio_map = {"優": 0, "中": 1, "差": 2}
                         sub_df['sort_temp'] = sub_df['重要性'].map(prio_map).fillna(1)
                         sub_df = sub_df.sort_values(by=['sort_temp', '登記日期'], ascending=[True, False])
@@ -324,29 +288,20 @@ elif menu == "📂 資料管理中心":
                             oid = r['original_index']
                             uk = f"{key_pfx}_{oid}"
                             
-                            # 卡片容器
                             with st.container(border=True):
-                                # 1. 標題列
                                 top_c1, top_c2 = st.columns([3, 1])
                                 priority_icon = {"優": "🔴", "中": "🟡", "差": "⚪"}.get(r['重要性'], "⚪")
                                 top_c1.markdown(f"**{priority_icon} {r['幼兒姓名']}** | {r['幼兒生日']} | {r['家長稱呼']}")
                                 top_c2.caption(f"📞 {r['電話']}")
 
-                                # 2. 操作列
                                 r1, r2, r3, r4 = st.columns([1.2, 1.2, 1.5, 1])
-                                
-                                # 聯繫
                                 r1.checkbox("已聯繫", r['is_contacted'], key=f"c_{uk}")
                                 
-                                # 狀態 (自動處理舊資料對應)
                                 cur_stat = r['報名狀態']
                                 ui_stat_idx = NEW_STATUS_OPTIONS.index("排隊等待")
-                                if cur_stat in NEW_STATUS_OPTIONS:
-                                    ui_stat_idx = NEW_STATUS_OPTIONS.index(cur_stat)
-                                
+                                if cur_stat in NEW_STATUS_OPTIONS: ui_stat_idx = NEW_STATUS_OPTIONS.index(cur_stat)
                                 r2.selectbox("狀態", NEW_STATUS_OPTIONS, index=ui_stat_idx, key=f"s_{uk}", label_visibility="collapsed")
 
-                                # 年段
                                 curr_plan = str(r['預計入學資訊'])
                                 if curr_plan == 'nan': curr_plan = ""
                                 plans = [curr_plan]
@@ -355,23 +310,17 @@ elif menu == "📂 資料管理中心":
                                     plans = calculate_admission_roadmap(dob_obj)
                                     if curr_plan and curr_plan not in plans: plans.insert(0, curr_plan)
                                 except: pass
-                                
                                 p_idx = 0
                                 if curr_plan in plans: p_idx = plans.index(curr_plan)
                                 r3.selectbox("入學年段", plans, index=p_idx, key=f"p_{uk}", label_visibility="collapsed")
-                                
-                                # 優先度
                                 r4.selectbox("優先", ["優", "中", "差"], index=["優", "中", "差"].index(r['重要性'] if r['重要性'] in ["優", "中", "差"] else "中"), key=f"imp_{uk}", label_visibility="collapsed")
 
-                                # 3. 備註與刪除
                                 n_val = r['備註'] if str(r['備註'])!='nan' else ""
                                 st.text_area("備註", n_val, key=f"n_{uk}", height=68, placeholder="在此輸入備註...")
-                                
                                 b1, b2 = st.columns([5, 1])
                                 with b1: st.caption(f"登記日: {r['登記日期']}")
                                 with b2: st.checkbox("刪除", key=f"del_{uk}")
 
-        # === 儲存邏輯 ===
         def process_save_status(tdf, key_pfx):
             with st.spinner("正在比對並儲存資料..."):
                 fulldf = load_registered_data().copy()
@@ -393,30 +342,24 @@ elif menu == "📂 資料管理中心":
                     new_note = st.session_state.get(f"n_{uk}")
                     new_imp = st.session_state.get(f"imp_{uk}")
                     
-                    def strict_val(v): 
-                        s = str(v).strip()
-                        return "" if s == 'nan' else s
+                    def strict_val(v): return "" if str(v).strip()=='nan' else str(v).strip()
 
                     if new_contact is not None:
                         ncon_str = "已聯繫" if new_contact else "未聯繫"
                         if strict_val(fulldf.at[oid, '聯繫狀態']) != strict_val(ncon_str):
                             fulldf.at[oid, '聯繫狀態'] = ncon_str; changes_made = True
                     
-                    if new_status is not None:
-                        if strict_val(fulldf.at[oid, '報名狀態']) != strict_val(new_status):
-                            fulldf.at[oid, '報名狀態'] = new_status; changes_made = True
+                    if new_status is not None and strict_val(fulldf.at[oid, '報名狀態']) != strict_val(new_status):
+                        fulldf.at[oid, '報名狀態'] = new_status; changes_made = True
                         
-                    if new_plan is not None:
-                        if strict_val(fulldf.at[oid, '預計入學資訊']) != strict_val(new_plan):
-                            fulldf.at[oid, '預計入學資訊'] = new_plan; changes_made = True
+                    if new_plan is not None and strict_val(fulldf.at[oid, '預計入學資訊']) != strict_val(new_plan):
+                        fulldf.at[oid, '預計入學資訊'] = new_plan; changes_made = True
                         
-                    if new_note is not None:
-                        if strict_val(fulldf.at[oid, '備註']) != strict_val(new_note):
-                            fulldf.at[oid, '備註'] = new_note; changes_made = True
+                    if new_note is not None and strict_val(fulldf.at[oid, '備註']) != strict_val(new_note):
+                        fulldf.at[oid, '備註'] = new_note; changes_made = True
                         
-                    if new_imp is not None:
-                        if strict_val(fulldf.at[oid, '重要性']) != strict_val(new_imp):
-                            fulldf.at[oid, '重要性'] = new_imp; changes_made = True
+                    if new_imp is not None and strict_val(fulldf.at[oid, '重要性']) != strict_val(new_imp):
+                        fulldf.at[oid, '重要性'] = new_imp; changes_made = True
 
                 if indices_to_drop: fulldf = fulldf.drop(indices_to_drop)
 
@@ -424,10 +367,8 @@ elif menu == "📂 資料管理中心":
                     if sync_data_to_gsheets(fulldf):
                         st.toast("✅ 資料已成功更新並儲存！", icon="💾")
                         st.rerun() 
-                    else:
-                        st.error("儲存失敗，請檢查網路或權限。")
-                else:
-                    st.toast("系統沒有偵測到任何資料變更。", icon="ℹ️")
+                    else: st.error("儲存失敗，請檢查網路或權限。")
+                else: st.toast("系統沒有偵測到任何資料變更。", icon="ℹ️")
 
         with t1:
             target_data = disp[~disp['is_contacted']]
@@ -458,9 +399,7 @@ elif menu == "📂 資料管理中心":
                 if submitted_t3: process_save_status(disp, "t3")
             else: st.info("資料庫是空的。")
 
-# ------------------------------------------
-# 頁面 3: 學年快速查詢
-# ------------------------------------------
+# --- 頁面 3: 學年查詢 ---
 elif menu == "🎓 學年快速查詢":
     st.header("🎓 學年段快速查詢")
     
@@ -468,69 +407,47 @@ elif menu == "🎓 學年快速查詢":
 
     with tab_q1:
         st.caption("輸入出生年月日，立即查看該生目前的學齡與未來入學規劃，無需建立資料。")
-        
         c_mode = st.radio("選擇日期輸入方式", ["民國", "西元"], horizontal=True)
         dob = None
-        
-        if c_mode == "民國":
-            dob = roc_date_input("請選擇幼兒生日", date(2023, 1, 1), key_suffix="quick_check")
-        else:
-            dob = st.date_input("請選擇幼兒生日 (西元)", value=date(2023, 1, 1))
+        if c_mode == "民國": dob = roc_date_input("請選擇幼兒生日", date(2023, 1, 1), key_suffix="quick_check")
+        else: dob = st.date_input("請選擇幼兒生日 (西元)", value=date(2023, 1, 1))
 
         if dob:
             st.divider()
             roadmap = calculate_admission_roadmap(dob)
-            
-            st.subheader(f"👶 這位小朋友目前是：")
             current_status = roadmap[0] if roadmap else "年齡不符"
             grade_display = current_status.split(" - ")[-1] if " - " in current_status else current_status
             year_display = current_status.split(" - ")[0] if " - " in current_status else "目前"
             
             st.markdown(f"<div class='big-grade'>{grade_display}</div>", unsafe_allow_html=True)
             st.caption(f"學年度：{year_display} | 生日：{dob}")
-            
             st.markdown("### 🗓️ 未來入學路徑")
             roadmap_data = []
             for item in roadmap:
                 parts = item.split(" - ")
-                if len(parts) == 2:
-                    roadmap_data.append({"學年度": parts[0], "年段": parts[1]})
-            
-            if roadmap_data:
-                st.dataframe(pd.DataFrame(roadmap_data), use_container_width=True, hide_index=True)
-            else:
-                st.warning("年齡超出範圍或無法計算。")
+                if len(parts) == 2: roadmap_data.append({"學年度": parts[0], "年段": parts[1]})
+            if roadmap_data: st.dataframe(pd.DataFrame(roadmap_data), use_container_width=True, hide_index=True)
+            else: st.warning("年齡超出範圍或無法計算。")
 
     with tab_q2:
         st.subheader("📊 各年份出生兒童入學對照表")
-        st.caption("依據 9/2 分界計算，僅供參考。")
-        
-        # 動態產生對照表
         cur_roc_year = date.today().year - 1911
         check_years = [cur_roc_year, cur_roc_year+1, cur_roc_year+2, cur_roc_year+3]
-        
         birth_rows = []
         base_y = date.today().year
         for dy in range(0, 8):
             b_year_ad = base_y - dy
             b_year_roc = b_year_ad - 1911
             sample_date = date(b_year_ad, 9, 1)
-            
-            row_data = {
-                "西元出生": b_year_ad,
-                "民國出生": b_year_roc,
-            }
-            for y in check_years:
-                row_data[f"{y}學年"] = get_grade_for_year(sample_date, y)
+            row_data = {"西元出生": b_year_ad, "民國出生": b_year_roc}
+            for y in check_years: row_data[f"{y}學年"] = get_grade_for_year(sample_date, y)
             birth_rows.append(row_data)
         
         df_ref = pd.DataFrame(birth_rows)
         cols = ["西元出生", "民國出生"] + [f"{y}學年" for y in check_years]
         st.dataframe(df_ref[cols], use_container_width=True, hide_index=True)
 
-# ------------------------------------------
-# 頁面 4: 未來入學預覽
-# ------------------------------------------
+# --- 頁面 4: 未來入學預覽 ---
 elif menu == "📅 未來入學預覽":
     st.header("📅 未來入學名單預覽")
     cur_y = date.today().year - 1911
@@ -545,10 +462,7 @@ elif menu == "📅 未來入學預覽":
 
         for idx, row in df.iterrows():
             try:
-                # 排除確定不收
-                if "確定不收" in str(row['報名狀態']):
-                    continue
-
+                if "確定不收" in str(row['報名狀態']): continue
                 grade = None
                 p_str = str(row['預計入學資訊'])
                 if f"{search_y} 學年" in p_str:
@@ -564,7 +478,6 @@ elif menu == "📅 未來入學預覽":
                 if grade in roster:
                     stats['tot'] += 1
                     item = row.to_dict(); item['idx'] = idx; item['班級'] = grade
-                    
                     if is_conf:
                         stats['conf'] += 1
                         roster[grade]["conf"].append(item)
@@ -633,9 +546,9 @@ elif menu == "📅 未來入學預覽":
         col_t, col_d, col_x = st.columns(3)
         render_board(col_t, "🐥 幼幼班", roster["幼幼班"]["conf"])
         render_board(col_d, "🍼 托嬰中心", roster["托嬰中心"]["conf"])
-        
+
 # ------------------------------------------
-# 頁面 5: 師資與招生沙盤推演 (全新改寫)
+# 頁面 5: 師資與招生沙盤推演 (重構版)
 # ------------------------------------------
 elif menu == "👩‍🏫 師資與招生沙盤推演":
     st.header("👩‍🏫 師資與招生沙盤推演")
@@ -653,7 +566,7 @@ elif menu == "👩‍🏫 師資與招生沙盤推演":
         "5-6歲 (大班)": 0
     }
     
-    # 從資料庫統計該學年的確認人數 (作為參考底稿)
+    # 從資料庫統計該學年的確認人數
     for _, r in df.iterrows():
         try:
             if "確認入學" not in str(r['報名狀態']): continue
@@ -671,6 +584,7 @@ elif menu == "👩‍🏫 師資與招生沙盤推演":
         except: pass
 
     # 3. 建立可編輯的 DataFrame (模擬器核心)
+    # 注意：師資計算部分，3-6歲混齡計算
     sim_data = [
         {"年段": "0-2歲 (托嬰)", "法規師生比 (1:N)": 5,  "模擬學生數 (人)": default_counts["0-2歲 (托嬰)"]},
         {"年段": "2-3歲 (幼幼)", "法規師生比 (1:N)": 8,  "模擬學生數 (人)": default_counts["2-3歲 (幼幼)"]},
@@ -679,7 +593,6 @@ elif menu == "👩‍🏫 師資與招生沙盤推演":
         {"年段": "5-6歲 (大班)", "法規師生比 (1:N)": 15, "模擬學生數 (人)": default_counts["5-6歲 (大班)"]},
     ]
     
-    # 修正：115學年後準公幼師生比調整
     if cal_y >= 115:
         for d in sim_data:
             if "小班" in d["年段"] or "中班" in d["年段"] or "大班" in d["年段"]:
@@ -690,7 +603,6 @@ elif menu == "👩‍🏫 師資與招生沙盤推演":
     
     df_sim = pd.DataFrame(sim_data)
     
-    # 使用 data_editor 讓使用者修改
     edited_df = st.data_editor(
         df_sim,
         column_config={
@@ -706,70 +618,70 @@ elif menu == "👩‍🏫 師資與招生沙盤推演":
     # 4. 即時計算邏輯
     st.divider()
     
-    # 分組計算需求
     req_teachers = {"托嬰": 0, "幼幼": 0, "混齡(3-6)": 0}
     
     # 托嬰
     row_d = edited_df[edited_df["年段"] == "0-2歲 (托嬰)"].iloc[0]
     req_teachers["托嬰"] = math.ceil(row_d["模擬學生數 (人)"] / row_d["法規師生比 (1:N)"])
     
-    # 幼幼
+    # 幼幼 (獨立計算)
     row_t = edited_df[edited_df["年段"] == "2-3歲 (幼幼)"].iloc[0]
     req_teachers["幼幼"] = math.ceil(row_t["模擬學生數 (人)"] / row_t["法規師生比 (1:N)"])
     
     # 混齡 (小+中+大)
     df_mix = edited_df[edited_df["年段"].str.contains("小班|中班|大班")]
     total_mix_students = df_mix["模擬學生數 (人)"].sum()
-    mix_ratio = df_mix.iloc[0]["法規師生比 (1:N)"] # 取其中一個即可，通常一致
+    mix_ratio = df_mix.iloc[0]["法規師生比 (1:N)"] 
     req_teachers["混齡(3-6)"] = math.ceil(total_mix_students / mix_ratio)
 
-    # 顯示計算結果
     c_res1, c_res2, c_res3 = st.columns(3)
-    c_res1.metric("🍼 托嬰需聘老師", f"{req_teachers['托嬰']} 位", help=f"學生 {row_d['模擬學生數 (人)']} 人")
-    c_res2.metric("🐥 幼幼需聘老師", f"{req_teachers['幼幼']} 位", help=f"學生 {row_t['模擬學生數 (人)']} 人")
-    c_res3.metric("🐘 混齡(3-6)需聘老師", f"{req_teachers['混齡(3-6)']} 位", help=f"總生數 {total_mix_students} 人 / 師生比 1:{mix_ratio}")
+    c_res1.metric("🍼 托嬰需聘", f"{req_teachers['托嬰']} 師", help=f"學生 {row_d['模擬學生數 (人)']} 人")
+    c_res2.metric("🐥 幼幼需聘", f"{req_teachers['幼幼']} 師", help=f"學生 {row_t['模擬學生數 (人)']} 人 (不可混齡)")
+    c_res3.metric("🐘 3-6歲需聘 (混齡)", f"{req_teachers['混齡(3-6)']} 師", help=f"小中大共 {total_mix_students} 人 / 師生比 1:{mix_ratio}")
 
     # 5. 跨學年升班預演 (Promotion Simulator)
     st.markdown("---")
-    st.subheader("📈 跨學年升班預演 (招生缺額估算)")
-    st.info(f"模擬：若 **{cal_y} 學年** 收了多少學生，到了 **{cal_y+1} 學年** 會如何？")
+    st.subheader("📈 跨學年升班推演 (招生缺額估算)")
+    st.info(f"模擬：若 **{cal_y} 學年** 收了上述人數，到了 **{cal_y+1} 學年** 的缺額狀況。")
 
-    c_sim1, c_sim2 = st.columns(2)
+    c_sim1, c_sim2, c_sim3 = st.columns(3)
     
+    # 邏輯：這一屆的幼幼(2-3) 明年會變 小班(3-4)
+    # 這一屆的小班(3-4) 明年會變 中班(4-5)
+    # 這一屆的中班(4-5) 明年會變 大班(5-6)
+
+    # 1. 幼幼 -> 小班
     with c_sim1:
-        st.markdown("#### 🅰️ 幼幼班 升 小班")
-        # 取得使用者剛剛在上方輸入的幼幼班人數
+        st.markdown("#### 🅰️ 幼幼 $\\to$ 小班")
         curr_t_count = row_t["模擬學生數 (人)"]
-        st.write(f"假設 {cal_y} 學年幼幼班收： **{curr_t_count}** 人")
-        st.write("⬇️ 直升 (假設 100% 留讀)")
-        
-        target_small_cap = st.number_input(f"{cal_y+1} 學年【小班】預計核定名額", value=30, step=1)
-        
+        st.write(f"本屆幼幼班： **{curr_t_count}** 人")
+        target_small_cap = st.number_input(f"{cal_y+1} 學年【小班】預計名額", value=30, step=1, key="cap_s")
         gap_small = target_small_cap - curr_t_count
         
-        st.markdown(f"**{cal_y+1} 學年 小班狀況：**")
-        if gap_small > 0:
-            st.warning(f"👉 尚有 **{gap_small}** 個缺額，需對外招生。")
-        elif gap_small == 0:
-            st.success("✅ 剛好滿額，不需對外招生。")
-        else:
-            st.error(f"🚨 超收 **{abs(gap_small)}** 人！需在幼幼班階段控管人數或擴班。")
+        if gap_small > 0: st.warning(f"👉 尚缺 **{gap_small}** 人")
+        elif gap_small == 0: st.success("✅ 剛好滿額")
+        else: st.error(f"🚨 超收 **{abs(gap_small)}** 人")
 
+    # 2. 小班 -> 中班
     with c_sim2:
-        st.markdown("#### 🅱️ 小班 升 中班")
-        # 取得使用者剛剛在上方輸入的小班人數
+        st.markdown("#### 🅱️ 小班 $\\to$ 中班")
         curr_s_count = df_mix[df_mix["年段"]=="3-4歲 (小班)"].iloc[0]["模擬學生數 (人)"]
-        st.write(f"假設 {cal_y} 學年小班收： **{curr_s_count}** 人")
-        st.write("⬇️ 直升 (假設 100% 留讀)")
-        
-        target_med_cap = st.number_input(f"{cal_y+1} 學年【中班】預計核定名額", value=30, step=1)
-        
+        st.write(f"本屆小班： **{curr_s_count}** 人")
+        target_med_cap = st.number_input(f"{cal_y+1} 學年【中班】預計名額", value=30, step=1, key="cap_m")
         gap_med = target_med_cap - curr_s_count
         
-        st.markdown(f"**{cal_y+1} 學年 中班狀況：**")
-        if gap_med > 0:
-            st.warning(f"👉 尚有 **{gap_med}** 個缺額，需對外招生。")
-        elif gap_med == 0:
-            st.success("✅ 剛好滿額，不需對外招生。")
-        else:
-            st.error(f"🚨 超收 **{abs(gap_med)}** 人！")
+        if gap_med > 0: st.warning(f"👉 尚缺 **{gap_med}** 人")
+        elif gap_med == 0: st.success("✅ 剛好滿額")
+        else: st.error(f"🚨 超收 **{abs(gap_med)}** 人")
+
+    # 3. 中班 -> 大班
+    with c_sim3:
+        st.markdown("#### 🆎 中班 $\\to$ 大班")
+        curr_m_count = df_mix[df_mix["年段"]=="4-5歲 (中班)"].iloc[0]["模擬學生數 (人)"]
+        st.write(f"本屆中班： **{curr_m_count}** 人")
+        target_large_cap = st.number_input(f"{cal_y+1} 學年【大班】預計名額", value=30, step=1, key="cap_l")
+        gap_large = target_large_cap - curr_m_count
+        
+        if gap_large > 0: st.warning(f"👉 尚缺 **{gap_large}** 人")
+        elif gap_large == 0: st.success("✅ 剛好滿額")
+        else: st.error(f"🚨 超收 **{abs(gap_large)}** 人")
