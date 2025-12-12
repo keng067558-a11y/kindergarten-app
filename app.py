@@ -29,19 +29,20 @@ st.markdown("""
     .streamlit-expanderHeader { background-color: #f8f9fa; border: 1px solid #eee; font-weight: bold; color: #333; }
     .stSpinner { margin-top: 20px; }
     .big-grade { font-size: 2em; font-weight: bold; color: #ff4b4b; }
-    /* 卡片樣式優化 */
     div[data-testid="stVerticalBlock"] > div[data-testid="stVerticalBlock"] {
         gap: 0.5rem;
     }
 </style>
 """, unsafe_allow_html=True)
 
+# 定義全域新的狀態選項
+NEW_STATUS_OPTIONS = ["預約參觀", "排隊等待", "確認入學", "確定不收"]
+
 # ==========================================
 # 1. 資料存取邏輯
 # ==========================================
 SHEET_NAME = 'kindergarten_db'
 LOCAL_CSV = 'kindergarten_local_db.csv'
-EXPENSE_CSV = 'kindergarten_expenses.csv'
 
 def check_password():
     if "password_correct" not in st.session_state: st.session_state.password_correct = False
@@ -91,7 +92,7 @@ def load_registered_data():
     if '電話' in df.columns:
         df['電話'] = df['電話'].astype(str).str.strip().apply(lambda x: '0' + x if len(x) == 9 and x.startswith('9') else x)
     if '聯繫狀態' not in df.columns: df['聯繫狀態'] = '未聯繫'
-    if '報名狀態' not in df.columns: df['報名狀態'] = '排隊中'
+    if '報名狀態' not in df.columns: df['報名狀態'] = '排隊等待'
     if '重要性' not in df.columns: df['重要性'] = '中' 
     return df
 
@@ -124,62 +125,12 @@ def sync_data_to_gsheets(new_df):
         st.error(f"儲存錯誤: {e}")
         return False
 
-# --- 廠商發票資料讀取 ---
-def connect_to_gsheets_expenses():
-    c = get_gsheet_client()
-    if c:
-        try: return c.open(SHEET_NAME).worksheet('expenses')
-        except: return None
-    return None
-
-@st.cache_data(ttl=300)
-def load_expenses_data():
-    sheet = connect_to_gsheets_expenses()
-    df = pd.DataFrame()
-    if sheet:
-        try:
-            data = sheet.get_all_values()
-            if data: df = pd.DataFrame(data[1:], columns=data[0])
-        except: pass
-    
-    if df.empty:
-        try: df = pd.read_csv(EXPENSE_CSV)
-        except: df = pd.DataFrame(columns=['日期', '廠商名稱', '計畫類別', '項目說明', '金額', '發票狀態', '備註'])
-    
-    df = df.fillna("") 
-    if '金額' in df.columns:
-        df['金額'] = pd.to_numeric(df['金額'], errors='coerce').fillna(0).astype(int)
-    return df
-
-def sync_expenses_to_gsheets(new_df):
-    try:
-        save_df = new_df.copy()
-        final_cols = ['日期', '廠商名稱', '計畫類別', '項目說明', '金額', '發票狀態', '備註']
-        for c in final_cols:
-            if c not in save_df.columns: save_df[c] = ""
-        save_df = save_df[final_cols]
-        save_str_df = save_df.astype(str)
-
-        sheet = connect_to_gsheets_expenses()
-        if sheet:
-            try:
-                sheet.clear()
-                sheet.append_row(final_cols)
-                if not save_str_df.empty: sheet.append_rows(save_str_df.values.tolist())
-            except: pass
-
-        save_df.to_csv(EXPENSE_CSV, index=False)
-        load_expenses_data.clear()
-        return True
-    except Exception as e:
-        st.error(f"儲存錯誤: {e}")
-        return False
-
 # ==========================================
 # 2. 核心計算邏輯
 # ==========================================
 def roc_date_input(label, default_date=None, key_suffix=""):
-    st.write(f"**{label}**")
+    # 這是舊有的民國選單，保留給習慣用的地方
+    st.write(f"**{label} (民國)**")
     c1, c2, c3 = st.columns([1, 1, 1])
     if default_date is None: default_date = date.today()
     cur_roc = default_date.year - 1911
@@ -195,6 +146,7 @@ def to_roc_str(d): return f"{d.year-1911}/{d.month:02d}/{d.day:02d}"
 def get_grade_for_year(birth_date, target_roc_year):
     if not birth_date: return "未知"
     by_roc = birth_date.year - 1911
+    # 學制分界：9月2日
     offset = 1 if (birth_date.month > 9) or (birth_date.month == 9 and birth_date.day >= 2) else 0
     age = target_roc_year - by_roc - offset
     if age < 2: return "托嬰中心"
@@ -269,9 +221,9 @@ st.title("🏫 幼兒園新生管理系統")
 
 with st.spinner("載入資料庫..."):
     df = load_registered_data()
-    df_exp = load_expenses_data()
 
-menu = st.sidebar.radio("功能導航", ["👶 新增報名", "📂 資料管理中心", "🎓 學年快速查詢", "💰 廠商發票管理", "📅 未來入學預覽", "👩‍🏫 師資人力預估"])
+# 移除「廠商發票管理」
+menu = st.sidebar.radio("功能導航", ["👶 新增報名", "📂 資料管理中心", "🎓 學年快速查詢", "📅 未來入學預覽", "👩‍🏫 師資人力預估"])
 
 # --- 頁面 1: 新增 ---
 if menu == "👶 新增報名":
@@ -300,7 +252,7 @@ if menu == "👶 新增報名":
                 st.rerun()
         st.button("✅ 確認送出", type="primary", on_click=submit_all_cb, use_container_width=True)
 
-# --- 頁面 2: 資料管理 (修正版：解決儲存無效問題) ---
+# --- 頁面 2: 資料管理 (卡片式 + 狀態分組 + 修正後選項) ---
 elif menu == "📂 資料管理中心":
     st.header("📂 資料管理中心")
     col_search, col_dl = st.columns([4, 1])
@@ -320,20 +272,22 @@ elif menu == "📂 資料管理中心":
 
         # === 核心：狀態分類卡片渲染函數 ===
         def render_status_cards(tdf, key_pfx):
-            # 定義狀態分類
+            # 定義新的簡化狀態分類
             status_groups = {
-                "🔥 預約與考慮 (優先處理)": ["預約參觀", "考慮中"],
-                "⏳ 排隊等待": ["排隊中", "未定"], 
-                "✅ 確認入學": ["確認入學", "已安排"],
-                "❌ 放棄/不符/其他": ["放棄", "超齡/畢業"]
+                "🔥 預約與參觀": ["預約參觀"],
+                "⏳ 排隊等待 (含其他)": ["排隊等待"], # 預設 Catch-all
+                "✅ 確認入學": ["確認入學"],
+                "❌ 確定不收": ["確定不收"]
             }
-
-            all_known_statuses = [s for sublist in status_groups.values() for s in sublist]
             
+            # 定義目前系統認定的所有狀態
+            known_list = ["預約參觀", "排隊等待", "確認入學", "確定不收"]
+
             # 依序渲染每個區塊
             for group_name, status_list in status_groups.items():
-                if group_name == "⏳ 排隊等待":
-                    sub_df = tdf[tdf['報名狀態'].isin(status_list) | ~tdf['報名狀態'].isin(all_known_statuses)]
+                if group_name == "⏳ 排隊等待 (含其他)":
+                    # 包含「排隊等待」以及所有「非標準選項」(例如舊資料的 考慮中/已安排/放棄)
+                    sub_df = tdf[tdf['報名狀態'].isin(status_list) | ~tdf['報名狀態'].isin(known_list)]
                 else:
                     sub_df = tdf[tdf['報名狀態'].isin(status_list)]
 
@@ -362,10 +316,16 @@ elif menu == "📂 資料管理中心":
                                 # 聯繫
                                 r1.checkbox("已聯繫", r['is_contacted'], key=f"c_{uk}")
                                 
-                                # 狀態
-                                opts_stat = ["預約參觀", "排隊中", "確認入學", "已安排", "考慮中", "放棄", "超齡/畢業"]
-                                cur_stat = r['報名狀態'] if r['報名狀態'] in opts_stat else "排隊中"
-                                r2.selectbox("狀態", opts_stat, index=opts_stat.index(cur_stat), key=f"s_{uk}", label_visibility="collapsed")
+                                # 狀態 (自動處理舊資料對應)
+                                cur_stat = r['報名狀態']
+                                # 如果目前狀態不在新選項中，UI 預設顯示「排隊等待」，但原資料不變直到使用者按下儲存
+                                ui_stat_idx = 0 # 預設排隊等待 (index 1)
+                                if cur_stat in NEW_STATUS_OPTIONS:
+                                    ui_stat_idx = NEW_STATUS_OPTIONS.index(cur_stat)
+                                else:
+                                    ui_stat_idx = NEW_STATUS_OPTIONS.index("排隊等待")
+                                
+                                r2.selectbox("狀態", NEW_STATUS_OPTIONS, index=ui_stat_idx, key=f"s_{uk}", label_visibility="collapsed")
 
                                 # 年段
                                 curr_plan = str(r['預計入學資訊'])
@@ -392,10 +352,9 @@ elif menu == "📂 資料管理中心":
                                 with b1: st.caption(f"登記日: {r['登記日期']}")
                                 with b2: st.checkbox("刪除", key=f"del_{uk}")
 
-        # === 儲存邏輯 (修正版：解決表單更新順序問題) ===
+        # === 儲存邏輯 ===
         def process_save_status(tdf, key_pfx):
             with st.spinner("正在比對並儲存資料..."):
-                # 重新讀取原始資料，確保比對基準正確
                 fulldf = load_registered_data().copy()
                 changes_made = False
                 indices_to_drop = [] 
@@ -404,25 +363,21 @@ elif menu == "📂 資料管理中心":
                     oid = r['original_index']
                     uk = f"{key_pfx}_{oid}"
                     
-                    # 1. 檢查刪除
                     if st.session_state.get(f"del_{uk}"):
                         indices_to_drop.append(oid)
                         changes_made = True
                         continue 
                     
-                    # 2. 獲取表單新值
                     new_contact = st.session_state.get(f"c_{uk}")
                     new_status = st.session_state.get(f"s_{uk}")
                     new_plan = st.session_state.get(f"p_{uk}")
                     new_note = st.session_state.get(f"n_{uk}")
                     new_imp = st.session_state.get(f"imp_{uk}")
                     
-                    # 嚴格比對函數 (解決 nan != "" 的問題)
                     def strict_val(v): 
                         s = str(v).strip()
                         return "" if s == 'nan' else s
 
-                    # 3. 逐欄比對
                     if new_contact is not None:
                         ncon_str = "已聯繫" if new_contact else "未聯繫"
                         if strict_val(fulldf.at[oid, '聯繫狀態']) != strict_val(ncon_str):
@@ -444,9 +399,7 @@ elif menu == "📂 資料管理中心":
                         if strict_val(fulldf.at[oid, '重要性']) != strict_val(new_imp):
                             fulldf.at[oid, '重要性'] = new_imp; changes_made = True
 
-                # 4. 執行變更
-                if indices_to_drop: 
-                    fulldf = fulldf.drop(indices_to_drop)
+                if indices_to_drop: fulldf = fulldf.drop(indices_to_drop)
 
                 if changes_made:
                     if sync_data_to_gsheets(fulldf):
@@ -457,18 +410,14 @@ elif menu == "📂 資料管理中心":
                 else:
                     st.toast("系統沒有偵測到任何資料變更。", icon="ℹ️")
 
-        # === 渲染頁面與觸發器 (修正：先 render，再判斷 button) ===
         with t1:
             target_data = disp[~disp['is_contacted']]
             if not target_data.empty:
                 with st.form("form_t1"):
                     render_status_cards(target_data, "t1")
                     st.write("")
-                    # 重要修正：不使用 on_click，改用返回值判斷
                     submitted_t1 = st.form_submit_button("💾 儲存所有變更", type="primary", use_container_width=True)
-                
-                if submitted_t1:
-                    process_save_status(target_data, "t1")
+                if submitted_t1: process_save_status(target_data, "t1")
             else: st.info("🎉 太棒了！目前沒有待聯繫的名單。")
 
         with t2:
@@ -478,9 +427,7 @@ elif menu == "📂 資料管理中心":
                     render_status_cards(target_data, "t2")
                     st.write("")
                     submitted_t2 = st.form_submit_button("💾 儲存所有變更", type="primary", use_container_width=True)
-                
-                if submitted_t2:
-                    process_save_status(target_data, "t2")
+                if submitted_t2: process_save_status(target_data, "t2")
             else: st.info("目前沒有已聯繫的資料。")
 
         with t3:
@@ -489,118 +436,79 @@ elif menu == "📂 資料管理中心":
                     render_status_cards(disp, "t3")
                     st.write("")
                     submitted_t3 = st.form_submit_button("💾 儲存所有變更", type="primary", use_container_width=True)
-                
-                if submitted_t3:
-                    process_save_status(disp, "t3")
+                if submitted_t3: process_save_status(disp, "t3")
             else: st.info("資料庫是空的。")
 
-# --- 頁面 2.5: 學年快速查詢 ---
+# --- 頁面 2.5: 學年快速查詢 (新增西元查詢與對照表) ---
 elif menu == "🎓 學年快速查詢":
     st.header("🎓 學年段快速查詢")
-    st.caption("輸入出生年月日，立即查看該生目前的學齡與未來入學規劃，無需建立資料。")
     
-    dob = roc_date_input("請選擇幼兒生日", date(2023, 1, 1), key_suffix="quick_check")
-    
-    if dob:
-        st.divider()
-        roadmap = calculate_admission_roadmap(dob)
+    tab_q1, tab_q2 = st.tabs(["📅 生日查詢 (計算)", "📊 年度對照總表"])
+
+    with tab_q1:
+        st.caption("輸入出生年月日，立即查看該生目前的學齡與未來入學規劃，無需建立資料。")
         
-        st.subheader(f"👶 這位小朋友目前是：")
-        current_status = roadmap[0] if roadmap else "年齡不符"
-        grade_display = current_status.split(" - ")[-1] if " - " in current_status else current_status
-        year_display = current_status.split(" - ")[0] if " - " in current_status else "目前"
+        c_mode = st.radio("選擇日期輸入方式", ["民國", "西元"], horizontal=True)
+        dob = None
         
-        st.markdown(f"<div class='big-grade'>{grade_display}</div>", unsafe_allow_html=True)
-        st.caption(f"學年度：{year_display}")
-        
-        st.markdown("### 🗓️ 未來入學路徑")
-        roadmap_data = []
-        for item in roadmap:
-            parts = item.split(" - ")
-            if len(parts) == 2:
-                roadmap_data.append({"學年度": parts[0], "年段": parts[1]})
-        
-        if roadmap_data:
-            st.dataframe(pd.DataFrame(roadmap_data), use_container_width=True, hide_index=True)
+        if c_mode == "民國":
+            dob = roc_date_input("請選擇幼兒生日", date(2023, 1, 1), key_suffix="quick_check")
         else:
-            st.warning("年齡超出範圍或無法計算。")
+            dob = st.date_input("請選擇幼兒生日 (西元)", value=date(2023, 1, 1))
 
-# --- 頁面 3: 廠商發票管理 ---
-elif menu == "💰 廠商發票管理":
-    st.header("💰 廠商發票管理")
-    
-    with st.expander("➕ 新增一筆發票/請款紀錄", expanded=False):
-        with st.form("add_expense_form"):
-            c1, c2 = st.columns(2)
-            e_date = c1.date_input("請款日期", value=date.today())
-            e_vendor = c2.text_input("廠商名稱", placeholder="輸入廠商...")
+        if dob:
+            st.divider()
+            roadmap = calculate_admission_roadmap(dob)
             
-            c3, c4 = st.columns(2)
-            proj_opts = ["一般行政", "115教保計畫", "餐點費", "教學設備", "環境修繕", "其他"]
-            e_proj = c3.selectbox("計畫/經費類別", proj_opts + ["自訂..."])
-            if e_proj == "自訂...": e_proj = st.text_input("輸入自訂計畫名稱")
-            e_item = c4.text_input("項目說明", placeholder="買了什麼...")
+            st.subheader(f"👶 這位小朋友目前是：")
+            current_status = roadmap[0] if roadmap else "年齡不符"
+            grade_display = current_status.split(" - ")[-1] if " - " in current_status else current_status
+            year_display = current_status.split(" - ")[0] if " - " in current_status else "目前"
             
-            c5, c6 = st.columns(2)
-            e_amount = c5.number_input("金額 (元)", min_value=0, step=100)
-            e_status = c6.radio("發票狀態", ["✅ 已收到", "❌ 未收到"], horizontal=True)
-            e_note = st.text_area("備註", height=50)
+            st.markdown(f"<div class='big-grade'>{grade_display}</div>", unsafe_allow_html=True)
+            st.caption(f"學年度：{year_display} | 生日：{dob}")
+            
+            st.markdown("### 🗓️ 未來入學路徑")
+            roadmap_data = []
+            for item in roadmap:
+                parts = item.split(" - ")
+                if len(parts) == 2:
+                    roadmap_data.append({"學年度": parts[0], "年段": parts[1]})
+            
+            if roadmap_data:
+                st.dataframe(pd.DataFrame(roadmap_data), use_container_width=True, hide_index=True)
+            else:
+                st.warning("年齡超出範圍或無法計算。")
 
-            if st.form_submit_button("💾 新增紀錄"):
-                with st.spinner("儲存中..."):
-                    new_row = {
-                        '日期': str(e_date), '廠商名稱': e_vendor, '計畫類別': e_proj,
-                        '項目說明': e_item, '金額': e_amount, '發票狀態': e_status, '備註': e_note
-                    }
-                    new_df = pd.concat([df_exp, pd.DataFrame([new_row])], ignore_index=True)
-                    if sync_expenses_to_gsheets(new_df):
-                        st.toast("已新增支出紀錄！", icon="💰")
-                        st.rerun()
+    with tab_q2:
+        st.subheader("📊 各年份出生兒童入學對照表")
+        st.caption("依據 9/2 分界計算，僅供參考。")
+        
+        # 動態產生對照表
+        cur_roc_year = date.today().year - 1911
+        check_years = [cur_roc_year, cur_roc_year+1, cur_roc_year+2, cur_roc_year+3]
+        
+        # 產生最近 8 年的出生年份
+        birth_rows = []
+        base_y = date.today().year
+        for dy in range(0, 8):
+            b_year_ad = base_y - dy
+            b_year_roc = b_year_ad - 1911
+            # 假設生日為 9/1 (大)
+            sample_date = date(b_year_ad, 9, 1)
+            
+            row_data = {
+                "西元出生": b_year_ad,
+                "民國出生": b_year_roc,
+            }
+            for y in check_years:
+                row_data[f"{y}學年"] = get_grade_for_year(sample_date, y)
+            birth_rows.append(row_data)
+        
+        df_ref = pd.DataFrame(birth_rows)
+        st.dataframe(df_ref, use_container_width=True, hide_index=True)
 
-    if not df_exp.empty:
-        total_amt = df_exp['金額'].sum()
-        missing_inv = df_exp[df_exp['發票狀態'].str.contains("未收到")]
-        
-        m1, m2, m3 = st.columns(3)
-        m1.metric("💰 總支出金額", f"${total_amt:,}")
-        m2.metric("🧾 登記筆數", f"{len(df_exp)} 筆")
-        m3.metric("⚠️ 發票未到", f"{len(missing_inv)} 筆", delta_color="inverse")
-        
-        st.divider()
-        st.subheader("📋 支出明細表")
-        
-        col_fil1, col_fil2 = st.columns([1, 1])
-        filter_proj = col_fil1.multiselect("篩選計畫/類別", df_exp['計畫類別'].unique())
-        filter_vendor = col_fil2.text_input("搜尋廠商或項目")
-        
-        show_df = df_exp.copy()
-        if filter_proj: show_df = show_df[show_df['計畫類別'].isin(filter_proj)]
-        if filter_vendor:
-            show_df = show_df[
-                show_df['廠商名稱'].astype(str).str.contains(filter_vendor) | 
-                show_df['項目說明'].astype(str).str.contains(filter_vendor)
-            ]
-        
-        edited_exp = st.data_editor(
-            show_df,
-            column_config={
-                "日期": st.column_config.DateColumn(format="YYYY-MM-DD"),
-                "金額": st.column_config.NumberColumn(format="$%d"),
-                "發票狀態": st.column_config.SelectboxColumn(options=["✅ 已收到", "❌ 未收到"]),
-                "計畫類別": st.column_config.TextColumn(width="medium"),
-            },
-            num_rows="dynamic",
-            use_container_width=True,
-            key="expense_editor"
-        )
-        
-        if st.button("💾 更新發票/經費紀錄"):
-            with st.spinner("更新中..."):
-                if sync_expenses_to_gsheets(edited_exp):
-                    st.toast("資料已更新！", icon="✅")
-                    st.rerun()
-
-# --- 頁面 4: 未來預覽 ---
+# --- 頁面 4: 未來預覽 (更新篩選邏輯) ---
 elif menu == "📅 未來入學預覽":
     st.header("📅 未來入學名單預覽")
     cur_y = date.today().year - 1911
@@ -615,6 +523,10 @@ elif menu == "📅 未來入學預覽":
 
         for idx, row in df.iterrows():
             try:
+                # 排除確定不收
+                if "確定不收" in str(row['報名狀態']):
+                    continue
+
                 grade = None
                 p_str = str(row['預計入學資訊'])
                 if f"{search_y} 學年" in p_str:
@@ -626,9 +538,8 @@ elif menu == "📅 未來入學預覽":
 
                 status = str(row['報名狀態'])
                 is_conf = "確認入學" in status
-                is_drop = "放棄" in status
 
-                if grade in roster and not is_drop:
+                if grade in roster:
                     stats['tot'] += 1
                     item = row.to_dict(); item['idx'] = idx; item['班級'] = grade
                     
@@ -658,7 +569,7 @@ elif menu == "📅 未來入學預覽":
                             "idx": None, "聯繫狀態": None,
                             "班級": st.column_config.TextColumn(width="small", disabled=True),
                             "已聯繫": st.column_config.CheckboxColumn(width="small"),
-                            "報名狀態": st.column_config.SelectboxColumn(options=["預約參觀", "排隊中", "確認入學", "已安排", "考慮中", "放棄"], width="medium"),
+                            "報名狀態": st.column_config.SelectboxColumn(options=NEW_STATUS_OPTIONS, width="medium"),
                             "幼兒姓名": st.column_config.TextColumn(disabled=True),
                             "家長稱呼": st.column_config.TextColumn(disabled=True),
                             "電話": st.column_config.TextColumn(disabled=True),
@@ -718,6 +629,9 @@ elif menu == "👩‍🏫 師資人力預估":
     cts = {k: {"c": 0, "w": 0} for k in ["托嬰中心", "幼幼班", "小班", "中班", "大班"]}
     for _, r in df.iterrows():
         try:
+            # 排除不收
+            if "確定不收" in str(r['報名狀態']): continue
+
             gr = None
             if f"{cal_y} 學年" in str(r['預計入學資訊']): gr = str(r['預計入學資訊']).split("-")[1].strip()
             if not gr:
