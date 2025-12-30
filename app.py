@@ -410,20 +410,64 @@ if menu == "👶 新增報名":
         st.text_area("備註", key="input_note", height=100)
         st.button("⬇️ 加入暫存", on_click=add_child_cb)
 
-    if st.session_state.temp_children:
+        if st.session_state.temp_children:
         st.divider()
-        st.write(f"🛒 **待送出 ({len(st.session_state.temp_children)})**")
+        st.write(f"🛒 **待送出 ({len(st.session_state.temp_children)}) — 可直接編輯**")
 
-        # 用穩定索引顯示（避免 pop 造成 key 混亂）
-        rm_idx = None
-        for i, c in enumerate(st.session_state.temp_children):
-            st.text(f"{i+1}. {c['幼兒姓名']} ({c['幼兒生日']}) - {c['預計入學資訊']}")
-            if st.button("❌ 移除", key=f"rm_{i}"):
-                rm_idx = i
-        if rm_idx is not None:
-            st.session_state.temp_children.pop(rm_idx)
+        # 轉成 DataFrame 讓 data_editor 編輯
+        temp_df = pd.DataFrame(st.session_state.temp_children)
 
-        st.button("✅ 確認送出", type="primary", on_click=submit_all_cb, use_container_width=True)
+        # 確保欄位存在（避免 KeyError）
+        for c in ["幼兒姓名", "幼兒生日", "報名狀態", "預計入學資訊", "備註", "重要性"]:
+            if c not in temp_df.columns:
+                temp_df[c] = ""
+
+        # 提供使用者「刪除」欄位（勾選後會移除）
+        if "__刪除__" not in temp_df.columns:
+            temp_df["__刪除__"] = False
+
+        edited = st.data_editor(
+            temp_df,
+            hide_index=True,
+            use_container_width=True,
+            num_rows="dynamic",  # ✅ 允許直接刪列/增列（右上角）
+            column_order=["__刪除__", "幼兒姓名", "幼兒生日", "報名狀態", "預計入學資訊", "重要性", "備註"],
+            column_config={
+                "__刪除__": st.column_config.CheckboxColumn("刪除", width="small"),
+                "幼兒姓名": st.column_config.TextColumn("幼兒姓名", width="medium"),
+                "幼兒生日": st.column_config.TextColumn("幼兒生日(民國)", help="格式如 112/09/01", width="small"),
+                "報名狀態": st.column_config.SelectboxColumn("狀態", options=NEW_STATUS_OPTIONS, width="small"),
+                "預計入學資訊": st.column_config.TextColumn("預計入學", width="medium"),
+                "重要性": st.column_config.SelectboxColumn("重要性", options=["優", "中", "差"], width="small"),
+                "備註": st.column_config.TextColumn("備註", width="large"),
+            },
+            key="temp_editor",
+        )
+
+        # ✅ 套用刪除
+        edited2 = edited.copy()
+        edited2 = edited2.loc[~edited2["__刪除__"].fillna(False)].copy()
+        edited2 = edited2.drop(columns=["__刪除__"], errors="ignore").fillna("").astype(str)
+
+        # ✅ 寫回 session_state（讓你編輯後真的生效）
+        st.session_state.temp_children = edited2.to_dict("records")
+
+        # ✅ 一鍵：依生日重算第一個「預計入學資訊」（可選）
+        col_a, col_b = st.columns([1, 1])
+        with col_a:
+            if st.button("🧮 依生日重新推算入學年段（全部）", use_container_width=True):
+                new_list = []
+                for c in st.session_state.temp_children:
+                    dob_obj = parse_roc_date_str(_safe_str(c.get("幼兒生日")))
+                    if dob_obj:
+                        plans = calculate_admission_roadmap(dob_obj)
+                        c["預計入學資訊"] = plans[0] if plans else _safe_str(c.get("預計入學資訊"))
+                    new_list.append(c)
+                st.session_state.temp_children = new_list
+
+        with col_b:
+            st.button("✅ 確認送出", type="primary", on_click=submit_all_cb, use_container_width=True)
+
 
 # --- 頁面 2: 資料管理 ---
 elif menu == "📂 資料管理中心":
