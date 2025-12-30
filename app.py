@@ -58,6 +58,7 @@ if "msg_error" not in st.session_state:
 if "msg_ok" not in st.session_state:
     st.session_state["msg_ok"] = None
 
+
 # ==========================================
 # 1. 資料存取邏輯
 # ==========================================
@@ -120,7 +121,6 @@ def check_password():
         if ok:
             if pwd == "1234":
                 st.session_state.password_correct = True
-                # 不用 spinner / toast
             else:
                 st.error("密碼錯誤")
     return st.session_state.password_correct
@@ -224,7 +224,6 @@ def sync_data_to_gsheets(new_df: pd.DataFrame) -> bool:
         if sheet:
             try:
                 values = [FINAL_COLS] + save_df.values.tolist()
-                # 一次更新 A1，較穩定、速度也較好
                 sheet.clear()
                 sheet.update("A1", values)
             except Exception:
@@ -249,7 +248,6 @@ def roc_date_input(label, default_date=None, key_suffix=""):
         default_date = date.today()
 
     cur_roc = default_date.year - 1911
-    # range(90, 131) 對應 90~130
     y_list = list(range(90, 131))
     y_idx = max(0, min(len(y_list) - 1, cur_roc - 90))
 
@@ -345,14 +343,19 @@ def submit_all_cb():
     referrer = _safe_str(st.session_state.get("input_referrer"))
 
     for c in st.session_state.temp_children:
+        # ✅ 生日防呆（避免奇怪格式進資料庫）
+        dob_str = _safe_str(c.get("幼兒生日"))
+        if dob_str and (parse_roc_date_str(dob_str) is None):
+            dob_str = ""
+
         rows.append({
-            "報名狀態": c.get("報名狀態", "預約參觀"),
+            "報名狀態": _safe_str(c.get("報名狀態")) or "預約參觀",
             "聯繫狀態": "未聯繫",
             "登記日期": to_roc_str(date.today()),
             "幼兒姓名": _safe_str(c.get("幼兒姓名")),
             "家長稱呼": f"{p_name} {p_title}".strip(),
             "電話": phone,
-            "幼兒生日": _safe_str(c.get("幼兒生日")),
+            "幼兒生日": dob_str,
             "預計入學資訊": _safe_str(c.get("預計入學資訊")),
             "推薦人": referrer,
             "備註": _safe_str(c.get("備註")),
@@ -410,19 +413,17 @@ if menu == "👶 新增報名":
         st.text_area("備註", key="input_note", height=100)
         st.button("⬇️ 加入暫存", on_click=add_child_cb)
 
-        if st.session_state.temp_children:
+    # ✅ 待送出：改成可編輯 data_editor（你要的功能）
+    if st.session_state.temp_children:
         st.divider()
         st.write(f"🛒 **待送出 ({len(st.session_state.temp_children)}) — 可直接編輯**")
 
-        # 轉成 DataFrame 讓 data_editor 編輯
         temp_df = pd.DataFrame(st.session_state.temp_children)
 
-        # 確保欄位存在（避免 KeyError）
-        for c in ["幼兒姓名", "幼兒生日", "報名狀態", "預計入學資訊", "備註", "重要性"]:
-            if c not in temp_df.columns:
-                temp_df[c] = ""
+        for col in ["幼兒姓名", "幼兒生日", "報名狀態", "預計入學資訊", "備註", "重要性"]:
+            if col not in temp_df.columns:
+                temp_df[col] = ""
 
-        # 提供使用者「刪除」欄位（勾選後會移除）
         if "__刪除__" not in temp_df.columns:
             temp_df["__刪除__"] = False
 
@@ -430,7 +431,7 @@ if menu == "👶 新增報名":
             temp_df,
             hide_index=True,
             use_container_width=True,
-            num_rows="dynamic",  # ✅ 允許直接刪列/增列（右上角）
+            num_rows="dynamic",
             column_order=["__刪除__", "幼兒姓名", "幼兒生日", "報名狀態", "預計入學資訊", "重要性", "備註"],
             column_config={
                 "__刪除__": st.column_config.CheckboxColumn("刪除", width="small"),
@@ -444,15 +445,13 @@ if menu == "👶 新增報名":
             key="temp_editor",
         )
 
-        # ✅ 套用刪除
         edited2 = edited.copy()
         edited2 = edited2.loc[~edited2["__刪除__"].fillna(False)].copy()
         edited2 = edited2.drop(columns=["__刪除__"], errors="ignore").fillna("").astype(str)
 
-        # ✅ 寫回 session_state（讓你編輯後真的生效）
+        # ✅ 寫回 session_state：讓你編輯後真的生效
         st.session_state.temp_children = edited2.to_dict("records")
 
-        # ✅ 一鍵：依生日重算第一個「預計入學資訊」（可選）
         col_a, col_b = st.columns([1, 1])
         with col_a:
             if st.button("🧮 依生日重新推算入學年段（全部）", use_container_width=True):
@@ -467,7 +466,6 @@ if menu == "👶 新增報名":
 
         with col_b:
             st.button("✅ 確認送出", type="primary", on_click=submit_all_cb, use_container_width=True)
-
 
 # --- 頁面 2: 資料管理 ---
 elif menu == "📂 資料管理中心":
@@ -520,14 +518,12 @@ elif menu == "📂 資料管理中心":
                         uk = f"{key_pfx}_{oid}"
 
                         with st.container(border=True):
-                            # 第一列：基本資料
                             c_edit1, c_edit2, c_edit3, c_edit4 = st.columns(4)
                             c_edit1.text_input("幼兒姓名", value=_safe_str(r["幼兒姓名"]), key=f"name_{uk}")
                             c_edit2.text_input("生日 (民國/月/日)", value=_safe_str(r["幼兒生日"]), key=f"dob_{uk}")
                             c_edit3.text_input("家長稱呼", value=_safe_str(r["家長稱呼"]), key=f"pname_{uk}")
                             c_edit4.text_input("電話", value=_safe_str(r["電話"]), key=f"phone_{uk}")
 
-                            # 第二列：狀態 / 入學 / 優先
                             r1, r2, r3, r4 = st.columns([1.2, 1.2, 1.5, 1])
                             r1.checkbox("已聯繫", bool(r["is_contacted"]), key=f"c_{uk}")
 
@@ -540,7 +536,6 @@ elif menu == "📂 資料管理中心":
                             dob_obj = parse_roc_date_str(r["幼兒生日"])
                             if dob_obj:
                                 auto_plans = calculate_admission_roadmap(dob_obj)
-                                # 將目前值放在最前，但不重複
                                 for p in auto_plans:
                                     if p not in plans:
                                         plans.append(p)
@@ -555,11 +550,9 @@ elif menu == "📂 資料管理中心":
                                 imp_val = "中"
                             r4.selectbox("優先", ["優", "中", "差"], index=["優", "中", "差"].index(imp_val), key=f"imp_{uk}", label_visibility="collapsed")
 
-                            # 第三列：備註
                             n_val = _safe_str(r["備註"])
                             st.text_area("備註", n_val, key=f"n_{uk}", height=68, placeholder="在此輸入備註...")
 
-                            # 底部：資訊與刪除
                             b1, b2 = st.columns([5, 1])
                             with b1:
                                 st.caption(f"登記日: {_safe_str(r['登記日期'])}")
@@ -580,7 +573,6 @@ elif menu == "📂 資料管理中心":
                     changes_made = True
                     continue
 
-                # 讀取所有可編輯欄位
                 new_name = _safe_str(st.session_state.get(f"name_{uk}"))
                 new_dob = _safe_str(st.session_state.get(f"dob_{uk}"))
                 new_pname = _safe_str(st.session_state.get(f"pname_{uk}"))
@@ -592,7 +584,6 @@ elif menu == "📂 資料管理中心":
                 new_note = _safe_str(st.session_state.get(f"n_{uk}"))
                 new_imp = _safe_str(st.session_state.get(f"imp_{uk}")) or "中"
 
-                # 逐一比對
                 if _safe_str(fulldf.at[oid, "幼兒姓名"]) != new_name:
                     fulldf.at[oid, "幼兒姓名"] = new_name
                     changes_made = True
@@ -642,8 +633,6 @@ elif menu == "📂 資料管理中心":
 
             if sync_data_to_gsheets(fulldf):
                 st.success("✅ 資料已成功更新並儲存！")
-                # 不 rerun：直接重新載入並讓下方顯示新資料
-                #（使用者若想刷新搜尋/分頁狀態，可手動切換頁籤）
                 st.session_state["__force_reload__"] = str(datetime.now())
             else:
                 st.error("儲存失敗，請檢查網路或權限。")
