@@ -53,7 +53,7 @@ st.markdown("""
     /* 卡片容器 (Card) */
     .clean-card {
         background: white;
-        padding: 1.5rem;
+        padding: 1.2rem;
         border-radius: 12px;
         border: 1px solid var(--border-color);
         margin-bottom: 1rem;
@@ -172,7 +172,8 @@ def save_data(df: pd.DataFrame):
     try:
         # 移除輔助欄位再儲存
         save_df = df.copy()
-        for col in ["建議班級", "已聯繫", "排序權重"]:
+        temp_cols = ["建議班級", "已聯繫", "排序權重", "優先權重", "分配班級"]
+        for col in temp_cols:
             if col in save_df.columns:
                 save_df = save_df.drop(columns=[col])
         
@@ -277,69 +278,94 @@ def page_add():
                 st.rerun()
 
 def page_manage(df):
-    st.markdown("<div class='main-title'>數據管理中心</div>", unsafe_allow_html=True)
+    st.markdown("<div class='main-title'>數據管理中心 (招生選員)</div>", unsafe_allow_html=True)
     
-    # 計算當前建議班級 (用於排序與顯示)
-    today = date.today()
-    cur_roc_y = today.year - 1911 - (1 if today.month < 8 else 0)
-    
-    def get_row_grade(b_str):
-        dob = parse_roc_date(b_str)
-        return get_grade_logic(dob, cur_roc_y)
+    # --- 篩選控制項 ---
+    with st.container(border=True):
+        c1, c2, c3 = st.columns([1.5, 2, 2])
+        
+        today = date.today()
+        default_roc = today.year - 1911 - (1 if today.month < 8 else 0)
+        
+        # 讓使用者選擇「要招哪一年的學生」
+        recruit_year = c1.number_input("🎯 預計招收年度 (學年)", value=default_roc + 1, min_value=90)
+        
+        # 動態計算「該年度」每個人會在哪個班級
+        def get_recruit_grade(b_str):
+            dob = parse_roc_date(b_str)
+            return get_grade_logic(dob, int(recruit_year))
 
-    df["建議班級"] = df["幼兒生日"].apply(get_row_grade)
-    df["排序權重"] = df["建議班級"].map(GRADE_ORDER).fillna(9)
-    df["優先權重"] = df["重要性"].map(PRIORITY_ORDER).fillna(9)
-    
-    # 執行排序：先比班級(大到小)，再比優先權(優到差)
-    df = df.sort_values(by=["排序權重", "優先權重", "登記日期"], ascending=[True, True, False])
+        df["分配班級"] = df["幼兒生日"].apply(get_recruit_grade)
+        df["排序權重"] = df["分配班級"].map(GRADE_ORDER).fillna(9)
+        df["優先權重"] = df["重要性"].map(PRIORITY_ORDER).fillna(9)
 
-    # 搜尋與篩選
-    c_s1, c_s2 = st.columns([3, 1])
-    search_kw = c_s1.text_input("🔍 搜尋姓名、電話或備註", placeholder="輸入關鍵字...")
-    filter_grade = c_s2.selectbox("📂 班級快速篩選", ["全部"] + list(GRADE_ORDER.keys()))
+        # 搜尋與班級過濾
+        search_kw = c2.text_input("🔍 搜尋姓名/電話", placeholder="快速找人...")
+        filter_grade = c3.selectbox("📂 篩選特定班級", ["顯示全部"] + list(GRADE_ORDER.keys()))
 
+    # 執行過濾邏輯
+    filtered_df = df.copy()
     if search_kw:
-        df = df[df.astype(str).apply(lambda x: x.str.contains(search_kw, case=False)).any(axis=1)]
-    if filter_grade != "全部":
-        df = df[df["建議班級"] == filter_grade]
+        filtered_df = filtered_df[filtered_df.astype(str).apply(lambda x: x.str.contains(search_kw, case=False)).any(axis=1)]
+    if filter_grade != "顯示全部":
+        filtered_df = filtered_df[filtered_df["分配班級"] == filter_grade]
 
-    st.markdown(f"目前顯示：**{len(df)}** 筆資料")
+    # 排序：班級 -> 優先級 -> 登記日期
+    filtered_df = filtered_df.sort_values(by=["排序權重", "優先權重", "登記日期"], ascending=[True, True, False])
 
-    df["已聯繫"] = df["聯繫狀態"].apply(lambda x: True if x == "已聯繫" else False)
+    # --- 頂部狀態小統計 (當篩選特定班級時非常有用) ---
+    if filter_grade != "顯示全部":
+        st.markdown(f"##### 📊 {recruit_year} 學年度 - {filter_grade} 招收統計")
+        s1, s2, s3, s4 = st.columns(4)
+        total_class = len(filtered_df)
+        contacted_class = len(filtered_df[filtered_df["聯繫狀態"] == "已聯繫"])
+        confirmed_class = len(filtered_df[filtered_df["報名狀態"] == "確認入學"])
+        
+        s1.metric("名單總數", total_class)
+        s2.metric("已聯繫", contacted_class)
+        s3.metric("確認入學", confirmed_class, delta=f"尚缺 {max(0, 16-confirmed_class) if '幼幼' in filter_grade else ''}", delta_color="inverse")
+        s4.write("") # 佔位
+
+    st.markdown(f"目前顯示資料：**{len(filtered_df)}** 筆")
+
+    # 輔助勾選欄位
+    filtered_df["已聯繫"] = filtered_df["聯繫狀態"].apply(lambda x: True if x == "已聯繫" else False)
     
-    # 優化後的表格編輯器
+    # --- 核心工作表格 ---
     edited_df = st.data_editor(
-        df,
-        column_order=["建議班級", "已聯繫", "報名狀態", "重要性", "幼兒姓名", "家長稱呼", "電話", "幼兒生日", "備註"],
+        filtered_df,
+        column_order=["分配班級", "已聯繫", "報名狀態", "重要性", "幼兒姓名", "家長稱呼", "電話", "幼兒生日", "備註"],
         column_config={
-            "建議班級": st.column_config.TextColumn("目前學年班級", width="small", disabled=True),
-            "已聯繫": st.column_config.CheckboxColumn("已聯繫"),
-            "報名狀態": st.column_config.SelectboxColumn("狀態", options=NEW_STATUS_OPTIONS, width="medium"),
+            "分配班級": st.column_config.TextColumn(f"{recruit_year}學年班級", width="small", disabled=True),
+            "已聯繫": st.column_config.CheckboxColumn("📞 已聯繫"),
+            "報名狀態": st.column_config.SelectboxColumn("✅ 錄取狀態", options=NEW_STATUS_OPTIONS, width="medium"),
             "重要性": st.column_config.SelectboxColumn("優先級", options=IMPORTANCE_OPTIONS, width="small"),
-            "幼兒姓名": st.column_config.TextColumn("幼兒姓名", width="medium"),
+            "幼兒姓名": st.column_config.TextColumn("姓名", width="medium"),
             "家長稱呼": st.column_config.TextColumn("家長", width="medium"),
             "電話": st.column_config.TextColumn("聯絡電話", width="medium"),
             "備註": st.column_config.TextColumn("備註", width="large"),
         },
         hide_index=True,
         use_container_width=True,
-        num_rows="dynamic"
+        num_rows="dynamic",
+        key="recruitment_editor"
     )
     
+    # --- 操作按鈕 ---
     st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
-    c_btn1, c_btn2, c_btn3 = st.columns([2, 2, 1])
-    if c_btn1.button("💾 儲存所有修改內容", type="primary", use_container_width=True):
+    cb1, cb2, cb3 = st.columns([2, 2, 1])
+    if cb1.button("💾 儲存名單變更", type="primary", use_container_width=True):
+        # 將「已聯繫」Checkbox 的結果轉回字串存儲
         edited_df["聯繫狀態"] = edited_df["已聯繫"].apply(lambda x: "已聯繫" if x else "未聯繫")
         if save_data(edited_df):
-            st.success("🎉 資料庫已成功更新並重新排序！")
+            st.success("✅ 資料庫已更新！")
             time.sleep(1)
             st.rerun()
             
-    if c_btn2.download_button("📥 匯出當前名單 CSV", df.to_csv(index=False).encode("utf-8-sig"), "data_export.csv", use_container_width=True):
+    if cb2.download_button("📥 匯出此清單 (CSV)", filtered_df.to_csv(index=False).encode("utf-8-sig"), "class_list.csv", use_container_width=True):
         st.toast("匯出成功")
         
-    if c_btn3.button("🔄 重新載入", use_container_width=True):
+    if cb3.button("🔄 刷新頁面", use_container_width=True):
         st.rerun()
 
 def page_quick_check():
