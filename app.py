@@ -102,6 +102,9 @@ st.markdown("""
 # ==========================================
 NEW_STATUS_OPTIONS = ["預約參觀", "排隊等待", "確認入學", "確定不收"]
 IMPORTANCE_OPTIONS = ["優", "中", "差"]
+GRADE_ORDER = {"大班": 1, "中班": 2, "小班": 3, "幼幼班": 4, "托嬰中心": 5, "未知": 6, "畢業/超齡": 7, "年齡不符": 8}
+PRIORITY_ORDER = {"優": 1, "中": 2, "差": 3}
+
 LOCAL_CSV = "kindergarten_local_db.csv"
 FINAL_COLS = [
     "報名狀態", "聯繫狀態", "登記日期", "幼兒姓名", "家長稱呼", "電話",
@@ -167,8 +170,14 @@ def load_data():
 
 def save_data(df: pd.DataFrame):
     try:
-        df = df[FINAL_COLS].fillna("").astype(str)
-        df.to_csv(LOCAL_CSV, index=False, encoding="utf-8-sig")
+        # 移除輔助欄位再儲存
+        save_df = df.copy()
+        for col in ["建議班級", "已聯繫", "排序權重"]:
+            if col in save_df.columns:
+                save_df = save_df.drop(columns=[col])
+        
+        save_df = save_df[FINAL_COLS].fillna("").astype(str)
+        save_df.to_csv(LOCAL_CSV, index=False, encoding="utf-8-sig")
         load_data.clear()
         return True
     except Exception as e:
@@ -269,32 +278,69 @@ def page_add():
 
 def page_manage(df):
     st.markdown("<div class='main-title'>數據管理中心</div>", unsafe_allow_html=True)
-    search_kw = st.text_input("🔍 搜尋姓名、電話或備註", placeholder="輸入關鍵字...")
+    
+    # 計算當前建議班級 (用於排序與顯示)
+    today = date.today()
+    cur_roc_y = today.year - 1911 - (1 if today.month < 8 else 0)
+    
+    def get_row_grade(b_str):
+        dob = parse_roc_date(b_str)
+        return get_grade_logic(dob, cur_roc_y)
+
+    df["建議班級"] = df["幼兒生日"].apply(get_row_grade)
+    df["排序權重"] = df["建議班級"].map(GRADE_ORDER).fillna(9)
+    df["優先權重"] = df["重要性"].map(PRIORITY_ORDER).fillna(9)
+    
+    # 執行排序：先比班級(大到小)，再比優先權(優到差)
+    df = df.sort_values(by=["排序權重", "優先權重", "登記日期"], ascending=[True, True, False])
+
+    # 搜尋與篩選
+    c_s1, c_s2 = st.columns([3, 1])
+    search_kw = c_s1.text_input("🔍 搜尋姓名、電話或備註", placeholder="輸入關鍵字...")
+    filter_grade = c_s2.selectbox("📂 班級快速篩選", ["全部"] + list(GRADE_ORDER.keys()))
+
     if search_kw:
         df = df[df.astype(str).apply(lambda x: x.str.contains(search_kw, case=False)).any(axis=1)]
+    if filter_grade != "全部":
+        df = df[df["建議班級"] == filter_grade]
+
+    st.markdown(f"目前顯示：**{len(df)}** 筆資料")
 
     df["已聯繫"] = df["聯繫狀態"].apply(lambda x: True if x == "已聯繫" else False)
+    
+    # 優化後的表格編輯器
     edited_df = st.data_editor(
         df,
-        column_order=["已聯繫", "報名狀態", "重要性", "幼兒姓名", "家長稱呼", "電話", "幼兒生日", "預計入學資訊", "備註"],
+        column_order=["建議班級", "已聯繫", "報名狀態", "重要性", "幼兒姓名", "家長稱呼", "電話", "幼兒生日", "備註"],
         column_config={
-            "已聯繫": st.column_config.CheckboxColumn("聯繫"),
-            "報名狀態": st.column_config.SelectboxColumn("狀態", options=NEW_STATUS_OPTIONS),
-            "重要性": st.column_config.SelectboxColumn("優先級", options=IMPORTANCE_OPTIONS),
-            "備註": st.column_config.TextColumn("備註", width="large")
+            "建議班級": st.column_config.TextColumn("目前學年班級", width="small", disabled=True),
+            "已聯繫": st.column_config.CheckboxColumn("已聯繫"),
+            "報名狀態": st.column_config.SelectboxColumn("狀態", options=NEW_STATUS_OPTIONS, width="medium"),
+            "重要性": st.column_config.SelectboxColumn("優先級", options=IMPORTANCE_OPTIONS, width="small"),
+            "幼兒姓名": st.column_config.TextColumn("幼兒姓名", width="medium"),
+            "家長稱呼": st.column_config.TextColumn("家長", width="medium"),
+            "電話": st.column_config.TextColumn("聯絡電話", width="medium"),
+            "備註": st.column_config.TextColumn("備註", width="large"),
         },
         hide_index=True,
         use_container_width=True,
         num_rows="dynamic"
     )
     
-    c1, c2 = st.columns([4, 1])
-    if c1.button("💾 儲存所有修改", type="primary", use_container_width=True):
+    st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
+    c_btn1, c_btn2, c_btn3 = st.columns([2, 2, 1])
+    if c_btn1.button("💾 儲存所有修改內容", type="primary", use_container_width=True):
         edited_df["聯繫狀態"] = edited_df["已聯繫"].apply(lambda x: "已聯繫" if x else "未聯繫")
-        if save_data(edited_df[FINAL_COLS]):
-            st.success("變更已存儲")
+        if save_data(edited_df):
+            st.success("🎉 資料庫已成功更新並重新排序！")
+            time.sleep(1)
             st.rerun()
-    c2.download_button("📥 匯出 CSV", df.to_csv(index=False).encode("utf-8-sig"), "data_export.csv", use_container_width=True)
+            
+    if c_btn2.download_button("📥 匯出當前名單 CSV", df.to_csv(index=False).encode("utf-8-sig"), "data_export.csv", use_container_width=True):
+        st.toast("匯出成功")
+        
+    if c_btn3.button("🔄 重新載入", use_container_width=True):
+        st.rerun()
 
 def page_quick_check():
     st.markdown("<div class='main-title'>學年快速查詢</div>", unsafe_allow_html=True)
