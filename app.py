@@ -17,6 +17,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# 自定義專業美化樣式
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;400;500;700&display=swap');
@@ -50,6 +51,27 @@ st.markdown("""
         font-weight: 500;
         transition: all 0.2s ease;
     }
+    .clean-card {
+        background: white;
+        padding: 1.2rem;
+        border-radius: 12px;
+        border: 1px solid var(--border-color);
+        margin-bottom: 1rem;
+    }
+    .result-box {
+        background: #ffffff;
+        border-left: 5px solid var(--accent-color);
+        padding: 1.5rem;
+        border-radius: 8px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+        text-align: center;
+    }
+    .result-grade {
+        font-size: 2.2rem;
+        font-weight: 700;
+        color: var(--accent-color);
+        margin: 0.5rem 0;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -59,6 +81,8 @@ st.markdown("""
 NEW_STATUS_OPTIONS = ["預約參觀", "排隊等待", "確認入學", "確定不收"]
 IMPORTANCE_OPTIONS = ["優", "中", "差"]
 GRADE_ORDER = {"大班": 1, "中班": 2, "小班": 3, "幼幼班": 4, "托嬰中心": 5, "未知": 6, "畢業/超齡": 7, "年齡不符": 8}
+PRIORITY_ORDER = {"優": 1, "中": 2, "差": 3}
+
 LOCAL_CSV = "kindergarten_local_db.csv"
 FINAL_COLS = [
     "報名狀態", "聯繫狀態", "登記日期", "幼兒姓名", "家長稱呼", "電話",
@@ -93,6 +117,18 @@ def get_grade_logic(birth_date: date, target_roc_year: int) -> str:
     grades = {0: "托嬰中心", 1: "托嬰中心", 2: "幼幼班", 3: "小班", 4: "中班", 5: "大班"}
     return grades.get(age, "畢業/超齡" if age > 5 else "年齡不符")
 
+def calculate_roadmap(dob: date):
+    if not dob: return []
+    today = date.today()
+    cur_roc = today.year - 1911 - (1 if today.month < 8 else 0)
+    roadmap = []
+    for i in range(6):
+        target = cur_roc + i
+        grade = get_grade_logic(dob, target)
+        if "畢業" not in grade and "不符" not in grade:
+            roadmap.append(f"{target} 學年 - {grade}")
+    return roadmap or ["年齡不符"]
+
 # ==========================================
 # 2. 資料存取層 (支援雲端讀取)
 # ==========================================
@@ -106,14 +142,13 @@ def load_data(gs_url=None):
             response = requests.get(gs_url)
             if response.status_code == 200:
                 cloud_df = pd.read_csv(StringIO(response.text), dtype=str)
-                # 這裡需要對應 Google 表單的欄位名稱，假設順序一致或做自動映射
-                # 若欄位名稱不同，需在此處做 rename
+                # 簡單欄位映射（可根據您的表單實際欄位名調整）
                 df = cloud_df
                 st.toast("✅ 已成功同步雲端數據")
         except Exception as e:
             st.warning(f"雲端同步失敗，改用本地數據。錯誤：{e}")
 
-    # 本地備份讀取
+    # 本地備份讀取（若雲端沒抓到或沒設定）
     if df.empty and os.path.exists(LOCAL_CSV):
         try:
             df = pd.read_csv(LOCAL_CSV, dtype=str)
@@ -123,6 +158,7 @@ def load_data(gs_url=None):
     for c in FINAL_COLS:
         if c not in df.columns: df[c] = ""
     df["電話"] = df["電話"].apply(normalize_phone)
+    df["聯繫狀態"] = df["聯繫狀態"].replace("", "未聯繫")
     return df[FINAL_COLS]
 
 def save_data(df: pd.DataFrame):
@@ -146,53 +182,125 @@ def login_screen():
         st.markdown("<div style='height:20vh'></div>", unsafe_allow_html=True)
         with st.container(border=True):
             st.subheader("🏫 系統登入")
-            pwd = st.text_input("密碼", type="password")
-            if st.button("進入", use_container_width=True, type="primary") or (pwd == "1234" and pwd):
+            pwd = st.text_input("請輸入管理密碼", type="password")
+            if st.button("進入系統", use_container_width=True, type="primary"):
                 if pwd == "1234":
                     st.session_state["authenticated"] = True
                     st.rerun()
                 else: st.error("密碼錯誤")
     return False
 
+def page_dashboard(df):
+    st.markdown("<div class='main-title'>營運概覽 Dashboard</div>", unsafe_allow_html=True)
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("待聯繫名單", len(df[df["聯繫狀態"] == "未聯繫"]))
+    m2.metric("預約參觀數", len(df[df["報名狀態"] == "預約參觀"]))
+    m3.metric("本屆入學確認", len(df[df["報名狀態"] == "確認入學"]))
+    m4.metric("總登記人數", len(df))
+    
+    st.markdown("<div style='height:2rem'></div>", unsafe_allow_html=True)
+    c1, c2 = st.columns([2, 1])
+    with c1:
+        st.markdown("##### 📌 最近登記 (前 10 筆)")
+        if not df.empty:
+            st.dataframe(df.tail(10).iloc[::-1][["登記日期", "幼兒姓名", "家長稱呼", "報名狀態"]], use_container_width=True, hide_index=True)
+        else:
+            st.info("尚無資料")
+    with c2:
+        st.markdown("##### 📈 狀態比例")
+        if not df.empty:
+            st.bar_chart(df["報名狀態"].value_counts(), horizontal=True)
+
+def page_add():
+    st.markdown("<div class='main-title'>新生登記作業</div>", unsafe_allow_html=True)
+    st.info("💡 建議家長直接填寫 Google 表單，資料會自動同步至系統。您也可以在下方手動補錄：")
+    with st.container(border=True):
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("👤 **家長聯絡資訊**")
+            p_name = st.text_input("家長姓氏", placeholder="例如：張")
+            p_title = st.selectbox("稱謂", ["媽媽", "爸爸", "先生", "小姐"])
+            phone = st.text_input("聯絡電話")
+            referrer = st.text_input("推薦人 (選填)")
+        with c2:
+            st.markdown("👶 **幼兒基本資訊**")
+            c_name = st.text_input("幼兒姓名")
+            st.write("出生日期 (民國)")
+            rcols = st.columns(3)
+            ry = rcols[0].number_input("年", 90, 130, 112)
+            rm = rcols[1].selectbox("月", range(1, 13))
+            rd = rcols[2].selectbox("日", range(1, 32))
+            note = st.text_area("備註事項", height=68)
+        
+        if st.button("➕ 儲存至系統", type="primary", use_container_width=True):
+            if not c_name or not phone: st.warning("請填寫姓名與電話")
+            else:
+                try:
+                    dob = date(ry + 1911, rm, rd)
+                    plans = calculate_roadmap(dob)
+                    main_df = load_data(st.session_state.get("gs_url"))
+                    new_row = pd.DataFrame([{
+                        "報名狀態": "預約參觀", "聯繫狀態": "未聯繫", "登記日期": to_roc_str(date.today()),
+                        "幼兒姓名": c_name, "家長稱呼": f"{p_name}{p_title}", "電話": normalize_phone(phone),
+                        "幼兒生日": f"{ry}/{rm}/{rd}", "預計入學資訊": plans[0] if plans else "待確認",
+                        "推薦人": referrer, "備註": note, "重要性": "中"
+                    }])
+                    if save_data(pd.concat([main_df, new_row], ignore_index=True)):
+                        st.success("✅ 手動登記成功")
+                        time.sleep(0.5)
+                        st.rerun()
+                except: st.error("日期格式錯誤")
+
 def page_manage(df):
     st.markdown("<div class='main-title'>📂 數據管理中心</div>", unsafe_allow_html=True)
     
     # --- 雲端同步設定 ---
-    with st.expander("☁️ 連結 Google Drive (表單數據)"):
-        st.write("請貼上 Google 試算表『發佈到網路』的 **CSV 連結**：")
-        gs_url_input = st.text_input("Google Sheets CSV URL", 
+    with st.expander("☁️ 連結 Google Drive (找回原本的聯結)"):
+        st.write("請貼上 Google 試算表『發佈到網路』產生的 **CSV 連結**：")
+        gs_url_input = st.text_input("CSV URL", 
                                      value=st.session_state.get("gs_url", ""),
                                      placeholder="https://docs.google.com/spreadsheets/d/.../export?format=csv")
-        if st.button("🔄 立即從雲端導入"):
+        if st.button("🔄 立即同步雲端資料庫"):
             st.session_state["gs_url"] = gs_url_input
             st.cache_data.clear()
             st.rerun()
 
-    search_kw = st.text_input("🔍 搜尋名單 (姓名或電話)", placeholder="快速找人...")
+    search_kw = st.text_input("🔍 搜尋名單 (姓名或電話)", placeholder="快速過濾...")
 
-    # 表格顯示邏輯
+    # 表格顯示與編輯
     display_df = df.copy()
     if search_kw:
         display_df = display_df[display_df.astype(str).apply(lambda x: x.str.contains(search_kw, case=False)).any(axis=1)]
     
-    st.info(f"📊 目前共有 {len(display_df)} 筆報名資料")
+    st.info(f"📊 目前顯示 {len(display_df)} 筆資料")
+
+    # 輔助計算分配班級（僅顯示用）
+    today = date.today()
+    cur_y = today.year - 1911 - (1 if today.month < 8 else 0)
+    display_df["預計班級"] = display_df["幼兒生日"].apply(lambda x: get_grade_logic(parse_roc_date(x), cur_y + 1))
+    display_df["已聯繫"] = display_df["聯繫狀態"] == "已聯繫"
 
     edited_df = st.data_editor(
         display_df,
-        column_order=["登記日期", "報名狀態", "重要性", "幼兒姓名", "家長稱呼", "電話", "幼兒生日", "備註"],
+        column_order=["登記日期", "已聯繫", "報名狀態", "重要性", "幼兒姓名", "家長稱呼", "電話", "預計班級", "備註"],
         column_config={
             "登記日期": st.column_config.TextColumn("登記日期", disabled=True),
-            "報名狀態": st.column_config.SelectboxColumn("狀態", options=NEW_STATUS_OPTIONS),
+            "預計班級": st.column_config.TextColumn("明年入學班級", disabled=True),
+            "已聯繫": st.column_config.CheckboxColumn("📞 已聯繫"),
+            "報名狀態": st.column_config.SelectboxColumn("錄取狀態", options=NEW_STATUS_OPTIONS),
+            "重要性": st.column_config.SelectboxColumn("優先級", options=IMPORTANCE_OPTIONS),
             "備註": st.column_config.TextColumn("備註", width="large"),
         },
         hide_index=True,
         use_container_width=True,
-        num_rows="dynamic"
+        num_rows="dynamic",
+        key="data_mgmt_editor"
     )
 
-    if st.button("💾 儲存所有變更至本地備份", type="primary", use_container_width=True):
-        # 如果有搜尋，需要合併回主資料
+    if st.button("💾 儲存所有修改", type="primary", use_container_width=True):
         full_df = load_data(st.session_state.get("gs_url"))
+        edited_df["聯繫狀態"] = edited_df["已聯繫"].apply(lambda x: "已聯繫" if x else "未聯繫")
+        
         if search_kw:
             full_df.update(edited_df)
             save_target = full_df
@@ -200,26 +308,92 @@ def page_manage(df):
             save_target = edited_df
         
         if save_data(save_target):
-            st.success("✅ 資料已同步至系統檔案中")
+            st.success("✅ 變更已儲存")
             time.sleep(0.5)
             st.rerun()
 
-def page_dashboard(df):
-    st.markdown("<div class='main-title'>營運概覽</div>", unsafe_allow_html=True)
-    c1, c2, c3 = st.columns(3)
-    c1.metric("總登記人數", len(df))
-    c2.metric("預約參觀", len(df[df["報名狀態"]=="預約參觀"]))
-    c3.metric("確認入學", len(df[df["報名狀態"]=="確認入學"]))
-    
-    if not df.empty:
-        st.write("### 📅 最近報名趨勢")
-        st.line_chart(df["登記日期"].value_counts().sort_index())
+def page_quick_check():
+    st.markdown("<div class='main-title'>學年快速查詢</div>", unsafe_allow_html=True)
+    c1, c2 = st.columns([1, 1.5])
+    with c1:
+        st.markdown("<div class='clean-card'>", unsafe_allow_html=True)
+        mode = st.radio("模式", ["民國", "西元"], horizontal=True)
+        if mode == "民國":
+            ry = st.number_input("年", 90, 130, 112)
+            rm = st.selectbox("月", range(1, 13))
+            rd = st.selectbox("日", range(1, 32))
+            try: dob = date(ry + 1911, rm, rd)
+            except: dob = None
+        else: dob = st.date_input("選擇日期", value=date(2023, 1, 1))
+        st.markdown("</div>", unsafe_allow_html=True)
 
-# (其餘 page_add, page_quick_check 等保持原邏輯)
-def page_add():
-    st.markdown("<div class='main-title'>新生登記</div>")
-    st.info("您可以直接使用 Google 表單讓家長填寫，或在此手動輸入。")
-    # ... 原有的 page_add 邏輯 ...
+    if dob:
+        with c2:
+            roadmap = calculate_roadmap(dob)
+            cur_info = roadmap[0] if roadmap else "無法計算"
+            grade = cur_info.split(" - ")[-1]
+            year = cur_info.split(" - ")[0]
+            st.markdown(f"""
+            <div class='result-box'>
+                <div style='color: #64748B;'>{year} 學年度</div>
+                <div class='result-grade'>{grade}</div>
+                <div style='font-size: 0.9rem; color: #94A3B8;'>生日：{to_roc_str(dob)}</div>
+            </div>
+            """, unsafe_allow_html=True)
+            with st.expander("查看未來五年預測"):
+                st.table(pd.DataFrame([r.split(" - ") for r in roadmap], columns=["學年度", "預計年段"]))
+
+def page_preview(df):
+    st.markdown("<div class='main-title'>未來入學分班預覽</div>", unsafe_allow_html=True)
+    target_y = st.number_input("目標查看學年度", value=date.today().year - 1911 + 1)
+    
+    preview_rows = []
+    for _, r in df.iterrows():
+        if "確定不收" in r["報名狀態"]: continue
+        dob = parse_roc_date(r["幼兒生日"])
+        grade = get_grade_logic(dob, int(target_y))
+        if "畢業" not in grade and "不符" not in grade:
+            preview_rows.append({"班級": grade, "狀態": r["報名狀態"], "幼兒姓名": r["幼兒姓名"], "電話": r["電話"]})
+    
+    if not preview_rows: st.info("目前名單中尚無符合的人員名單")
+    else:
+        pdf = pd.DataFrame(preview_rows)
+        grades = ["大班", "中班", "小班", "幼幼班", "托嬰中心"]
+        cols = st.columns(len(grades))
+        for i, g in enumerate(grades):
+            with cols[i]:
+                g_count = len(pdf[pdf["班級"] == g])
+                st.markdown(f"**{g}**")
+                st.markdown(f"<div style='font-size:1.8rem; font-weight:700;'>{g_count}</div>", unsafe_allow_html=True)
+                with st.expander("詳情"):
+                    st.write(pdf[pdf["班級"] == g][["幼兒姓名", "狀態"]])
+
+def page_calc(df):
+    st.markdown("<div class='main-title'>招生缺額與師資試算</div>", unsafe_allow_html=True)
+    with st.container(border=True):
+        cal_y = st.number_input("欲招生學年度", value=date.today().year - 1911 + 1)
+        ref_y = cal_y - 1
+        old_counts = {"幼幼班": 0, "小班": 0, "中班": 0}
+        for _, r in df.iterrows():
+            if r["報名狀態"] == "確認入學":
+                dob = parse_roc_date(r["幼兒生日"])
+                gr = get_grade_logic(dob, ref_y)
+                if gr in old_counts: old_counts[gr] += 1
+        
+        total_rising = sum(old_counts.values())
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("##### 🐘 3-6歲混齡區")
+            st.caption(f"由 {ref_y} 學年直升舊生：{total_rising} 人")
+            target_mix = st.number_input("混齡班總額", value=90)
+            ratio = 12 if cal_y >= 115 else 15
+            st.metric("招生缺額預估", f"{max(0, target_mix - total_rising)} 人")
+            st.metric(f"師資需求 (1:{ratio})", f"{math.ceil(target_mix / ratio)} 名")
+        with c2:
+            st.markdown("##### 🐥 2-3歲幼幼班")
+            target_t = st.number_input("幼幼班名額", value=16)
+            st.metric("幼幼班收容", f"{target_t} 人")
+            st.metric("師資需求 (1:8)", f"{math.ceil(target_t / 8)} 名")
 
 # ==========================================
 # 4. 主程式控管
@@ -227,18 +401,27 @@ def page_add():
 def main():
     if not login_screen(): return
     
+    # 確保 session_state 存在
+    if "gs_url" not in st.session_state:
+        st.session_state["gs_url"] = ""
+
     df = load_data(st.session_state.get("gs_url"))
     
     with st.sidebar:
-        st.markdown("### 🏫 園所管理")
-        menu = st.radio("選單", ["儀表板", "數據管理", "快速查詢"])
-        if st.button("安全登出"):
+        st.markdown("<div style='text-align:center; padding: 1rem;'><h2 style='margin:0;'>🏫</h2><h4 style='margin:0;'>園所管理系統</h4></div>", unsafe_allow_html=True)
+        menu = st.radio("主要功能導覽", ["🏠 營運儀表板", "👶 新生報名登記", "📂 數據管理中心", "🎓 學年快速查詢", "📅 未來入學預覽", "👩‍🏫 招生師資試算"])
+        st.divider()
+        st.caption(f"今日：{to_roc_str(date.today())}")
+        if st.button("🚪 安全登出"):
             st.session_state["authenticated"] = False
             st.rerun()
 
-    if menu == "儀表板": page_dashboard(df)
-    elif menu == "數據管理": page_manage(df)
-    elif menu == "快速查詢": st.write("查詢功能開發中...")
+    if menu == "🏠 營運儀表板": page_dashboard(df)
+    elif menu == "👶 新生報名登記": page_add()
+    elif menu == "📂 數據管理中心": page_manage(df)
+    elif menu == "🎓 學年快速查詢": page_quick_check()
+    elif menu == "📅 未來入學預覽": page_preview(df)
+    elif menu == "👩‍🏫 招生師資試算": page_calc(df)
 
 if __name__ == "__main__":
     main()
