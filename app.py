@@ -7,27 +7,28 @@ import json
 import time
 
 # ==========================================
-# 0. 系統介面美化 (Apple 極簡美學)
+# 0. 介面美化與設定 (蘋果極簡風)
 # ==========================================
-st.set_page_config(page_title="幼兒園報名系統", page_icon="📝", layout="wide")
+st.set_page_config(page_title="幼兒園報名管理", page_icon="📝", layout="wide")
 
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700;900&display=swap');
     .main { background-color: #F2F2F7; }
     html, body, [class*="css"] { 
-        font-family: -apple-system, "PingFang TC", "Noto Sans TC", sans-serif !important; 
+        font-family: -apple-system, "BlinkMacSystemFont", "PingFang TC", "Noto Sans TC", sans-serif !important; 
     }
     
-    /* 統計方塊 */
+    /* 統計方塊樣式 */
     .stMetric {
         background-color: white;
         padding: 24px;
         border-radius: 20px;
         box-shadow: 0 2px 10px rgba(0,0,0,0.03);
+        border: 1px solid rgba(0,0,0,0.05);
     }
     
-    /* 輸入框與按鈕 */
+    /* 按鈕樣式 */
     .stButton>button {
         border-radius: 12px;
         font-weight: 700;
@@ -36,24 +37,26 @@ st.markdown("""
         color: white;
         transition: all 0.2s;
     }
-    .stButton>button:hover { background-color: #0056b3; }
     
-    /* 表格編輯器 */
+    /* 表格編輯器圓角 */
     div[data-testid="stDataEditor"] {
         border-radius: 20px !important;
         overflow: hidden;
+    }
+
+    [data-testid="stSidebar"] {
+        background-color: white;
     }
 </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 1. 雲端連線配置 (已嵌入您的金鑰)
+# 1. 雲端金鑰連線 (對接您的 Google Sheets)
 # ==========================================
 
-# 試算表 ID
 GSHEET_ID = "1ZofZnB8Btig_6XvsHGh7bbapnfJM-vDkXTFpaU7ngmE"
 
-# 服務帳號金鑰
+# 服務帳號金鑰 (已嵌入您的專屬授權)
 GOOGLE_JSON_KEY = {
   "type": "service_account",
   "project_id": "gen-lang-client-0350949155",
@@ -68,126 +71,142 @@ GOOGLE_JSON_KEY = {
   "universe_domain": "googleapis.com"
 }
 
+# 欄位定義 (完全適配您的 Excel)
+HEADERS = ["報名狀態", "聯繫狀態", "登記日期", "幼兒姓名", "家長稱呼", "電話", "幼兒生日", "預計入學資訊", "推薦人", "備註", "重要性"]
+
 @st.cache_resource
 def get_client():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds = ServiceAccountCredentials.from_json_keyfile_dict(GOOGLE_JSON_KEY, scope)
     return gspread.authorize(creds)
 
-def load_data():
+def load_all_data():
     try:
         client = get_client()
         sheet = client.open_by_key(GSHEET_ID).get_sheets()[0]
         data = sheet.get_all_records()
         
-        # 如果是空的，建立預設結構
+        # 若 Excel 是空的或標題不對，自動初始化
         if not data:
-            headers = ["幼兒姓名", "家長姓氏", "電話", "備註", "處理狀態", "登記日期"]
-            sheet.update('A1', [headers])
-            return pd.DataFrame(columns=headers), sheet
+            sheet.clear()
+            sheet.update(range_name='A1', values=[HEADERS])
+            return pd.DataFrame(columns=HEADERS), sheet
             
         return pd.DataFrame(data), sheet
     except Exception as e:
-        st.error(f"雲端連線失敗，請檢查金鑰或共用權限：{e}")
+        st.error(f"連線失敗，請檢查權限設定：{e}")
         return pd.DataFrame(), None
 
 # ==========================================
 # 2. 主頁面邏輯
 # ==========================================
 def main():
-    df, sheet = load_data()
+    # 讀取雲端最新資料
+    df, sheet = load_all_data()
     
-    # Header
+    # 頂部狀態列
     t1, t2 = st.columns([5, 1])
     with t1:
-        st.title("📝 幼兒園招生雲端系統")
-        st.caption("✅ 全自動同步模式：已連動 Google 試算表")
+        st.title("📝 幼兒園招生自動化系統")
+        st.caption("✅ 已連結 Google 試算表 (即時更新模式)")
     with t2:
-        if st.button("🔄 刷新名單", use_container_width=True): 
+        if st.button("🔄 刷新頁面", use_container_width=True): 
             st.cache_resource.clear()
             st.rerun()
 
     # A. 數據統計
     m1, m2, m3 = st.columns(3)
-    m1.metric("總登記人數", len(df))
-    m2.metric("待處理名單", len(df[df['處理狀態'] == '待處理']) if not df.empty else 0)
-    m3.metric("資料庫狀態", "連線中", delta="穩定")
+    count = len(df)
+    m1.metric("總登記人數", count)
+    m2.metric("待聯繫名單", len(df[df['聯繫狀態'] == '未聯繫']) if count > 0 else 0)
+    m3.metric("資料同步", "雲端連線中")
 
     st.divider()
 
-    # B. 搜尋功能
-    search = st.text_input("🔍 搜尋孩子、家長或電話...", placeholder="請輸入關鍵字...")
+    # B. 搜尋篩選
+    search_query = st.text_input("🔍 搜尋孩子姓名、電話或備註...", placeholder="請輸入搜尋內容")
     
     display_df = df.copy()
-    if search:
-        mask = display_df.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)
+    if search_query:
+        # 全欄位搜尋
+        mask = display_df.astype(str).apply(lambda x: x.str.contains(search_query, case=False)).any(axis=1)
         display_df = display_df[mask]
 
-    # C. 名單清單與編輯
+    # C. 名單列表與編輯區
     if not display_df.empty:
-        st.subheader("📋 報名清單 (可直接在表格內修改內容)")
+        st.subheader("📋 招生名單明細")
+        st.caption("💡 提示：您可以直接在表格內修改報名狀態、電話或備註，修改後請按儲存。")
         
-        # 蘋果風格表格配置
+        # 配置表格編輯器
         updated_df = st.data_editor(
             display_df,
             use_container_width=True,
             hide_index=True,
             column_config={
-                "幼兒姓名": st.column_config.TextColumn("孩子姓名", required=True),
-                "家長姓氏": st.column_config.TextColumn("家長姓氏"),
+                "報名狀態": st.column_config.SelectboxColumn("狀態", options=["排隊等待", "已入學", "取消報名", "候補中"]),
+                "聯繫狀態": st.column_config.SelectboxColumn("聯絡進度", options=["未聯繫", "聯繫中", "已聯繫", "電話未接"]),
                 "電話": st.column_config.TextColumn("聯絡電話"),
-                "備註": st.column_config.TextColumn("備註內容", width="large"),
-                "處理狀態": st.column_config.SelectboxColumn("狀態", options=["待處理", "已聯繫", "確認入學", "取消"]),
-                "登記日期": st.column_config.TextColumn("登記日期", disabled=True)
+                "備註": st.column_config.TextColumn("詳細備註", width="large"),
+                "重要性": st.column_config.SelectboxColumn("等級", options=["高", "中", "低"]),
+                "登記日期": st.column_config.TextColumn("日期", disabled=True)
             }
         )
         
-        if st.button("💾 儲存並同步變更至雲端 Excel", type="primary"):
+        # 儲存變更按鈕
+        if st.button("💾 儲存所有修改至 Excel", type="primary"):
             try:
-                with st.spinner("同步中..."):
+                with st.spinner("同步雲端 Excel 中..."):
                     sheet.clear()
-                    # 重新寫入完整的資料
-                    sheet.update('A1', [updated_df.columns.values.tolist()] + updated_df.values.tolist())
-                    st.success("✅ 同步成功！雲端 Excel 已更新。")
+                    # 按照 HEADERS 順序寫回
+                    data_to_save = [updated_df.columns.values.tolist()] + updated_df.values.tolist()
+                    sheet.update(range_name='A1', values=data_to_save, value_input_option='USER_ENTERED')
+                    st.success("✅ Excel 已同步更新！")
                     time.sleep(1)
                     st.rerun()
             except Exception as e:
                 st.error(f"同步失敗：{e}")
     else:
-        st.info("👋 歡迎！目前名單是空的，請在側邊欄填寫第一筆資料。")
+        st.info("👋 目前沒有任何登記資料。請在左側邊欄新增第一筆資料。")
 
     # D. 側邊欄：快速新增
     with st.sidebar:
-        st.header("✨ 錄入報名資訊")
+        st.header("✨ 新增報名資訊")
         with st.form("add_form", clear_on_submit=True):
             n_name = st.text_input("孩子姓名*")
             n_parent = st.text_input("家長姓氏 (例：林先生)")
             n_phone = st.text_input("聯絡電話*")
+            n_birth = st.text_input("生日 (例 112/05/20)")
             n_note = st.text_area("備註內容")
             
-            if st.form_submit_button("立即送出並同步雲端", use_container_width=True):
+            if st.form_submit_button("立即新增至雲端", use_container_width=True):
                 if n_name and n_phone:
-                    # 依據標題順序準備一列資料
+                    # 準備這 11 個欄位的資料 (對齊您的 Excel 標題順序)
                     new_row = [
-                        n_name,
-                        n_parent,
-                        n_phone,
-                        n_note,
-                        "待處理",
-                        datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+                        "排隊等待",                   # 報名狀態
+                        "未聯繫",                    # 聯繫狀態
+                        datetime.now().strftime("%Y/%m/%d"), # 登記日期
+                        n_name,                      # 幼兒姓名
+                        n_parent,                    # 家長稱呼
+                        n_phone,                     # 電話
+                        n_birth,                     # 幼兒生日
+                        "",                          # 預計入學資訊 (暫留空)
+                        "",                          # 推薦人 (暫留空)
+                        n_note,                      # 備註
+                        "中"                         # 重要性
                     ]
                     try:
-                        sheet.append_row(new_row)
-                        st.success(f"🎉 {n_name} 的資料已存入雲端！")
-                        time.sleep(1)
-                        st.rerun()
+                        with st.spinner("寫入中..."):
+                            sheet.append_row(new_row, value_input_option='USER_ENTERED')
+                            st.success(f"🎉 {n_name} 已成功存入您的 Excel！")
+                            time.sleep(1)
+                            st.rerun()
                     except Exception as e:
                         st.error(f"寫入失敗：{e}")
                 else:
                     st.error("姓名與電話為必填項")
 
         st.divider()
-        st.caption("📍 資料將會永久保存在您的試算表中。")
+        st.caption("📍 所有資料均加密傳輸至您的私有 Google 試算表。")
 
 if __name__ == "__main__":
     main()
