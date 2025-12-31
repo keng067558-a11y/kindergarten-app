@@ -1,230 +1,203 @@
 import streamlit as st
 import pandas as pd
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime, date
+import json
 import time
 
 # ==========================================
-# 0. 系統基本配置
+# 0. 系統環境與蘋果風格介面
 # ==========================================
-st.set_page_config(
-    page_title="幼兒園招生管理系統",
-    page_icon="🏫",
-    layout="wide"
-)
+st.set_page_config(page_title="幼兒園招生雲端管理", page_icon="🏫", layout="wide")
 
-# 套用蘋果風格的極簡 CSS
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap');
-    
+    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700;900&display=swap');
     .main { background-color: #F2F2F7; }
-    
-    /* 全域字體優化 */
-    html, body, [class*="css"]  {
-        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang TC", "Noto Sans TC", sans-serif !important;
-    }
-
-    /* 按鈕樣式 */
-    .stButton>button {
-        border-radius: 14px;
-        font-weight: 700;
-        transition: all 0.2s;
-        border: none;
-        padding: 0.5rem 1rem;
+    html, body, [class*="css"] { 
+        font-family: -apple-system, "BlinkMacSystemFont", "PingFang TC", "Noto Sans TC", sans-serif !important; 
     }
     
-    /* 統計卡片樣式 */
-    [data-testid="stMetricValue"] {
-        font-family: "SF Pro Text", "Tabular-nums" !important;
-        font-weight: 900 !important;
-        letter-spacing: -1px;
-    }
-    
+    /* 蘋果風格統計卡片 */
     .stMetric {
         background-color: white;
         padding: 24px;
         border-radius: 24px;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.03);
+        box-shadow: 0 4px 15px rgba(0,0,0,0.03);
         border: 1px solid rgba(0,0,0,0.05);
     }
     
-    /* 表格編輯器圓角 */
+    /* 按鈕圓角與動畫 */
+    .stButton>button {
+        border-radius: 14px;
+        font-weight: 700;
+        border: none;
+        padding: 0.6rem 1.5rem;
+        transition: all 0.2s;
+    }
+    .stButton>button:active { transform: scale(0.98); }
+    
+    /* 表格編輯器優化 */
     div[data-testid="stDataEditor"] {
         border-radius: 24px !important;
         overflow: hidden;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.03);
+        box-shadow: 0 4px 15px rgba(0,0,0,0.03);
     }
-    
-    /* 側邊欄設計 */
-    .css-164782u {
+
+    /* 側邊欄 */
+    [data-testid="stSidebar"] {
         background-color: white;
     }
 </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 1. 資料存取層 (目前使用記憶體模式)
+# 1. 雲端連線與欄位對應 (適配您的 Excel)
 # ==========================================
 
-# 初始化模擬資料庫 (Session State)
-if 'students_db' not in st.session_state:
-    # 預設一些範例資料
-    st.session_state.students_db = pd.DataFrame(columns=[
-        "時間戳記", "幼兒姓名", "家長電話", "幼兒生日", "家長姓名", "處理狀態", "老師備註"
-    ])
+GSHEET_ID = "1ZofZnB8Btig_6XvsHGh7bbapnfJM-vDkXTFpaU7ngmE"
+
+# 您的服務帳號金鑰
+GOOGLE_JSON_KEY = {
+  "type": "service_account",
+  "project_id": "gen-lang-client-0350949155",
+  "private_key_id": "0bc65fcf31f2bc625d4283024181f980b94e2d61",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQC2d0a4Jmkhn/gS\nOmYM0zbKtBMteB/pnmSqD8S0khV+9Upr1KRx2sjQ+YqYuYxa6wCX6zNCSclYTs0x\nAHg3qvEQXZ59UgUz8BWKOE59oI3o5rEDWhvBFu7KsXsugFXbgYGa4zTFGKHL7vMB\n4mtI48NwFeqZ/Jx7pJfbZ74j0hj71DWGGoKXWi8gPiC5Cj1HWDByveniWIFK5FOd\nPvcJD0e0jNPPbe/dvlyWs9vwRj6aLSyEFxoTb+uLelAQj3Mq4I6RUyzYPv+j/+5w\nvKbqbF+nox77OGvvTFdpUiY5t5PDVpObAiSSn1jGlB1dMDfJQ8G+73CK+YlKvTKf\nOjCUgZeHAgMBAAECggEAGhfciSEVD7Xsp86qIVNjFoHB7FKtXZ9FDfzLSHdLk6hI\nSDtUeOOsrBXDeCuwop/Qqej8n5IltPcv6L4EcxGC/7AjphBApjjDG80JjHWVVaUH\n007jgS1iYKIY14GKxaUzf47WUQlAugUlwzM53GaV4EWCExtI1XWoMbwYOM8mu3xT\ne8BA9cvt1a8CJjWmKgChin3qi1YEinKNudO4rJOMPCq+kVSWVEphy7XndlNWLm7E\nY5BGr+pCGGoHHlqWMotQpBuL4KzTUKom/cDj16Hk3sr8lU5wP2dXa8/ftHfSzfYp\n4THbqi9ote5CFlymVPeS6c3uEtX20ALPlg5eXA4qYQKBgQDhrGo4v7VTED01mLBk\ng2FFSigYexlHqJZRNoBuccIGgTfbKmWIDI1FQAE3klml6ZAJudejIWf902+dX7sQ\n/NsnRLeNtc1Et/HnPuNVPUwMflphZ56o2BedBRZ1UXswlfKgCE0SrSjGp1cx7nsB\nS+ZoiFynEpL1PAd4tqvG+IrRewKBgQDO/HDls+Qh1i5gOLjI7pwGf3aKdVONGODa\LsNF0vPbRGeUjxgmBIZ6DdQZRUOOCw547w0IlgHBSSNLbZZOzz/9cMS0U0PXLh41\TkKaih14ZpV1kK1i/9XP1HbQlW2vLLVbD7Wzti2dOujJp1cCp9C7ZtgP7FOFlLrD\nY/fyqpc2ZQKBgQCSCIlAKcZDdwm06haTJHVIakFh/h6QwWZsLVGUpqaAoROtDlVf\YYf1XQKsnFbIx0g/EvSYiqCJn03lz7H0vzttwMjquc+X/VRbaNWhLiZNG2KPD4eb\nCSLWqBktV8nY2d+EcXq2cDknu9fv5rvQTfZOhJc4Qgu5B9xp4ANuoRzriwKBgQC7\nDDWZ3q7SRRMzsQ6LxdUJqjYdeVk/sLPBd3DPsIreIzrXbViNQpmjwstg6s7ZlfRG\nJQDKOYTsfoN+rlGednuFNFsN+hDca7iww0A9F4L6QvndfBiz1i4J2h5k8CRmoShi\nWhgBhyhBZfLoCGkA5VYjhBTMjuwLUxRTbgurJ63uYQKBgQC3NOVqMlBubI6D1/LM\nlD8HYsZxl1VsNa3wqalvqJLFgOzVSSn9UXdjNxq1Wz3VUKV5GdwVsuUWIDJ6jMyQ\nctis0id1NLpIvUNnY5VYbsX/WP/nRCUYNKfuE4LgpQoCbbmNs0bHXYUmASg4Fg/0\nUKv2TDsqoh5Yi6nl4kYEH5jSBw==\n-----END PRIVATE KEY-----\n",
+  "client_email": "keng067558@gen-lang-client-0350949155.iam.gserviceaccount.com",
+  "client_id": "114682091672664451195",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/keng067558%40gen-lang-client-0350949155.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}
+
+# 定義您的 Excel 欄位常數 (完全匹配上傳的 CSV)
+COL_REG_STATUS = "報名狀態"
+COL_CON_STATUS = "聯繫狀態"
+COL_REG_DATE   = "登記日期"
+COL_NAME       = "幼兒姓名"
+COL_PARENT     = "家長稱呼"
+COL_PHONE      = "電話"
+COL_BIRTH      = "幼兒生日"
+COL_ENTRY_INFO = "預計入學資訊"
+COL_REF        = "推薦人"
+COL_NOTE       = "備註"
+COL_PRIORITY   = "重要性"
+
+@st.cache_resource
+def get_gspread_client():
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(GOOGLE_JSON_KEY, scope)
+    return gspread.authorize(creds)
 
 def fetch_data():
-    """未來這裡會改為讀取 Google Sheets"""
-    return st.session_state.students_db
-
-def save_data(df):
-    """未來這裡會將資料存回 Google Sheets"""
-    st.session_state.students_db = df
-    return True
+    try:
+        client = get_gspread_client()
+        sheet = client.open_by_key(GSHEET_ID).get_sheets()[0]
+        data = sheet.get_all_records()
+        return pd.DataFrame(data), sheet
+    except Exception as e:
+        st.error(f"雲端連線失敗，請確認已共用給服務帳號 Email：{e}")
+        return pd.DataFrame(), None
 
 # ==========================================
-# 2. 核心邏輯：台灣學制班別推算
+# 2. 班別計算邏輯 (台灣 9/1 學制)
 # ==========================================
-def calculate_grade(birthday_str):
-    if not birthday_str or "/" not in str(birthday_str):
-        return "資料待補"
+def calculate_grade_info(birthday_str):
+    if not birthday_str or "/" not in str(birthday_str): return ""
     try:
         parts = str(birthday_str).split('/')
-        roc_year = int(parts[0])
-        month = int(parts[1])
-        day = int(parts[2])
+        roc_year, month, day = int(parts[0]), int(parts[1]), int(parts[2])
         ce_year = roc_year + 1911
-        
         today = date.today()
-        # 目標學年度 (以 9/1 為準)
+        # 目標學年度基準 (以此學年度 9/1 為準)
         target_year = today.year if today.month < 9 else today.year + 1
-        
-        # 計算基準日當天的足歲
         age = target_year - ce_year
-        if month > 9 or (month == 9 and day >= 2):
-            age -= 1
-            
-        if age < 2: return "未滿2歲"
-        if age == 2: return "幼幼班"
-        if age == 3: return "小班"
-        if age == 4: return "中班"
-        if age == 5: return "大班"
-        return f"超齡({age}歲)"
-    except:
-        return "格式錯誤"
+        if month > 9 or (month == 9 and day >= 2): age -= 1
+        
+        school_year = roc_year + age + 3 # 估算入學學年度
+        grade_map = {2: "幼幼班", 3: "小班", 4: "中班", 5: "大班"}
+        grade_name = grade_map.get(age, "未滿2歲" if age < 2 else f"{age}歲")
+        return f"{target_year - 1911} 學年 - {grade_name}"
+    except: return ""
 
 # ==========================================
 # 3. 主介面 UI
 # ==========================================
 def main():
-    # 頂部導覽列
-    col_t, col_r = st.columns([4, 1])
-    with col_t:
-        st.title("🏫 招生管理中心")
-        st.caption("目前運行模式：本地預覽 (資料重整後將重置)")
-    with col_r:
-        if st.button("🔄 刷新頁面", use_container_width=True):
+    df, sheet = fetch_data()
+    
+    # 頂部導覽
+    t1, t2 = st.columns([5, 1])
+    with t1:
+        st.title("🏫 幼兒園招生雲端管理系統")
+        st.caption(f"✅ 已連動試算表：{GSHEET_ID[:10]}...")
+    with t2:
+        if st.button("🔄 刷新名單", use_container_width=True): 
+            st.cache_resource.clear()
             st.rerun()
 
-    # 載入資料
-    df = fetch_data()
+    if df.empty and sheet is not None:
+        st.warning("⚠️ 試算表目前是空的，請先在 Excel 中建立表頭或從側邊欄新增。")
+        return
 
-    # A. 數據統計區 (Apple Style)
+    # A. 數據統計
     m1, m2, m3, m4 = st.columns(4)
-    total_count = len(df)
-    m1.metric("總登記人數", total_count)
-    m2.metric("待處理", len(df[df['處理狀態'] == '待處理']))
-    m3.metric("確認入學", len(df[df['處理狀態'] == '確認入學']))
-    m4.metric("系統狀態", "運行中", delta="良好")
+    m1.metric("總名單人數", len(df))
+    m2.metric("排隊等待中", len(df[df[COL_REG_STATUS] == '排隊等待']) if COL_REG_STATUS in df.columns else 0)
+    m3.metric("今日需聯繫", len(df[df[COL_CON_STATUS] == '未聯繫']) if COL_CON_STATUS in df.columns else 0)
+    m4.metric("重要性(高)", len(df[df[COL_PRIORITY] == '高']) if COL_PRIORITY in df.columns else 0)
 
     st.divider()
 
-    # B. 搜尋與篩選
-    col_q, col_s = st.columns([3, 1])
-    with col_q:
-        query_str = st.text_input("🔍 搜尋名單", placeholder="輸入幼兒姓名、電話或備註內容...")
-    with col_s:
-        status_options = ["全部"] + list(df['處理狀態'].unique()) if not df.empty else ["全部"]
-        status_filter = st.selectbox("狀態篩選", status_options)
+    # B. 搜尋與過濾
+    col_search, col_filter = st.columns([3, 1])
+    with col_search:
+        search = st.text_input("🔍 搜尋姓名、電話、推薦人或備註內容...", placeholder="輸入關鍵字...")
+    with col_filter:
+        prio_list = ["全部"] + list(df[COL_PRIORITY].unique()) if COL_PRIORITY in df.columns else ["全部"]
+        prio_filter = st.selectbox("重要性過濾", prio_list)
 
-    # 執行過濾
     display_df = df.copy()
-    if query_str:
-        mask = display_df.astype(str).apply(lambda x: x.str.contains(query_str, case=False)).any(axis=1)
+    if search:
+        mask = display_df.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)
         display_df = display_df[mask]
-    if status_filter != "全部":
-        display_df = display_df[display_df['處理狀態'] == status_filter]
+    if prio_filter != "全部":
+        display_df = display_df[display_df[COL_PRIORITY] == prio_filter]
 
-    # C. 名單列表區
-    if df.empty:
-        st.info("👋 歡迎使用！目前名單是空的，請從左側邊欄新增第一筆資料。")
-    else:
+    # C. 核心名單編輯區
+    if not display_df.empty:
         st.subheader("📋 招生名單明細")
+        st.caption("💡 提示：您可以直接在表格中修改狀態、備註或推薦人，修改後請點擊下方儲存。")
         
-        # 顯示時動態推算班別
-        render_df = display_df.copy()
-        render_df['預計分班'] = render_df['幼兒生日'].apply(calculate_grade)
-        
-        # 表格編輯器
+        # 配置各欄位的顯示與編輯屬性
+        column_config = {
+            COL_REG_STATUS: st.column_config.SelectboxColumn("報名狀態", options=["排隊等待", "已入學", "取消報名", "候補中"], width="medium"),
+            COL_CON_STATUS: st.column_config.SelectboxColumn("聯繫狀態", options=["未聯繫", "聯繫中", "已聯繫", "電話未接"], width="medium"),
+            COL_NAME: st.column_config.TextColumn("幼兒姓名", width="medium"),
+            COL_PHONE: st.column_config.TextColumn("聯絡電話", width="medium"),
+            COL_BIRTH: st.column_config.TextColumn("生日", width="small"),
+            COL_ENTRY_INFO: st.column_config.TextColumn("預計入學", width="medium"),
+            COL_PRIORITY: st.column_config.SelectboxColumn("重要性", options=["高", "中", "低"], width="small"),
+            COL_NOTE: st.column_config.TextColumn("備註內容", width="large"),
+            COL_REF: st.column_config.TextColumn("推薦人", width="medium"),
+            COL_REG_DATE: st.column_config.TextColumn("登記日期", disabled=True)
+        }
+
         updated_df = st.data_editor(
-            render_df,
+            display_df,
             use_container_width=True,
             hide_index=True,
-            column_config={
-                "時間戳記": st.column_config.TextColumn("登記時間", disabled=True),
-                "幼兒姓名": st.column_config.TextColumn("姓名", required=True),
-                "預計分班": st.column_config.TextColumn("推算結果", disabled=True),
-                "處理狀態": st.column_config.SelectboxColumn(
-                    "目前進度", 
-                    options=["待處理", "預約參觀", "候補中", "確認入學", "取消報名"],
-                    required=True
-                ),
-                "老師備註": st.column_config.TextColumn("詳細備註", width="large")
-            }
+            column_config=column_config
         )
-
+        
         # 儲存按鈕
-        if st.button("💾 儲存所有變更", type="primary"):
-            # 移除僅顯示用的欄位
-            final_df = updated_df.drop(columns=['預計分班'])
-            save_data(final_df)
-            st.success("✅ 資料已成功更新！")
-            time.sleep(0.5)
-            st.rerun()
-
-    # D. 側邊欄：新增登記
-    with st.sidebar:
-        st.header("✨ 新增新生登記")
-        with st.form("add_new_student", clear_on_submit=True):
-            n_name = st.text_input("幼兒姓名*")
-            n_phone = st.text_input("家長電話*")
-            n_birth = st.text_input("民國生日", placeholder="110/05/20")
-            n_parent = st.text_input("家長姓名")
-            n_note = st.text_area("初始備註")
-            
-            submitted = st.form_submit_button("立即新增資料", type="primary", use_container_width=True)
-            
-            if submitted:
-                if n_name and n_phone:
-                    new_row = {
-                        "時間戳記": datetime.now().strftime("%Y/%m/%d %H:%M:%S"),
-                        "幼兒姓名": n_name,
-                        "家長電話": n_phone,
-                        "幼兒生日": n_birth,
-                        "家長姓名": n_parent,
-                        "處理狀態": "待處理",
-                        "老師備註": n_note
-                    }
-                    # 更新至 Session State
-                    st.session_state.students_db = pd.concat([st.session_state.students_db, pd.DataFrame([new_row])], ignore_index=True)
-                    st.success(f"🎉 {n_name} 已成功加入名單")
-                    time.sleep(1)
-                    st.rerun()
-                else:
-                    st.error("姓名與電話不能空白")
-
-        st.divider()
-        st.caption("☁️ 未來連動 Google Sheets 後，此處資料將會永久保存於您的雲端硬碟中。")
-
-if __name__ == "__main__":
-    main()
+        if st.button("💾 儲存所有變更至 Google Sheets", type="primary"):
+            try:
+                sheet.clear()
+                # 保持原有的欄位順序寫回
+                sheet.update('A1', [updated_df.columns.values.tolist()] + updated_df.values.tolist())
+                st.success("✅ 雲端資料同步成功！")
+                time.sleep(
