@@ -79,9 +79,16 @@ def load_data():
         client = get_client()
         sheet = client.open_by_key(GSHEET_ID).get_sheets()[0]
         data = sheet.get_all_records()
+        
+        # 如果是空的，建立預設結構
+        if not data:
+            headers = ["幼兒姓名", "家長姓氏", "電話", "備註", "處理狀態", "登記日期"]
+            sheet.update('A1', [headers])
+            return pd.DataFrame(columns=headers), sheet
+            
         return pd.DataFrame(data), sheet
     except Exception as e:
-        st.error(f"連線失敗：{e}")
+        st.error(f"雲端連線失敗，請檢查金鑰或共用權限：{e}")
         return pd.DataFrame(), None
 
 # ==========================================
@@ -93,26 +100,23 @@ def main():
     # Header
     t1, t2 = st.columns([5, 1])
     with t1:
-        st.title("📝 幼兒園報名管理系統")
-        st.caption("✅ 雲端同步模式：已直接連動您的 Google 試算表")
+        st.title("📝 幼兒園招生雲端系統")
+        st.caption("✅ 全自動同步模式：已連動 Google 試算表")
     with t2:
-        if st.button("🔄 刷新", use_container_width=True): 
+        if st.button("🔄 刷新名單", use_container_width=True): 
             st.cache_resource.clear()
             st.rerun()
-
-    if df.empty and sheet is not None:
-        st.info("👋 歡迎！目前名單是空的，請在側邊欄填寫第一筆資料。")
 
     # A. 數據統計
     m1, m2, m3 = st.columns(3)
     m1.metric("總登記人數", len(df))
-    m2.metric("待聯繫", len(df[df['處理狀態'] == '待處理']) if not df.empty else 0)
-    m3.metric("資料庫狀態", "連線穩定")
+    m2.metric("待處理名單", len(df[df['處理狀態'] == '待處理']) if not df.empty else 0)
+    m3.metric("資料庫狀態", "連線中", delta="穩定")
 
     st.divider()
 
     # B. 搜尋功能
-    search = st.text_input("🔍 搜尋孩子姓名、家長或電話...", placeholder="輸入關鍵字...")
+    search = st.text_input("🔍 搜尋孩子、家長或電話...", placeholder="請輸入關鍵字...")
     
     display_df = df.copy()
     if search:
@@ -121,7 +125,7 @@ def main():
 
     # C. 名單清單與編輯
     if not display_df.empty:
-        st.subheader("📋 報名清單 (可直接在表格內修改)")
+        st.subheader("📋 報名清單 (可直接在表格內修改內容)")
         
         # 蘋果風格表格配置
         updated_df = st.data_editor(
@@ -138,29 +142,32 @@ def main():
             }
         )
         
-        if st.button("💾 儲存並同步變更至 Excel", type="primary"):
+        if st.button("💾 儲存並同步變更至雲端 Excel", type="primary"):
             try:
-                sheet.clear()
-                # 寫回包含表頭的完整資料
-                sheet.update('A1', [updated_df.columns.values.tolist()] + updated_df.values.tolist())
-                st.success("✅ 同步成功！")
-                time.sleep(1)
-                st.rerun()
+                with st.spinner("同步中..."):
+                    sheet.clear()
+                    # 重新寫入完整的資料
+                    sheet.update('A1', [updated_df.columns.values.tolist()] + updated_df.values.tolist())
+                    st.success("✅ 同步成功！雲端 Excel 已更新。")
+                    time.sleep(1)
+                    st.rerun()
             except Exception as e:
                 st.error(f"同步失敗：{e}")
+    else:
+        st.info("👋 歡迎！目前名單是空的，請在側邊欄填寫第一筆資料。")
 
     # D. 側邊欄：快速新增
     with st.sidebar:
-        st.header("✨ 新增報名登記")
+        st.header("✨ 錄入報名資訊")
         with st.form("add_form", clear_on_submit=True):
             n_name = st.text_input("孩子姓名*")
             n_parent = st.text_input("家長姓氏 (例：林先生)")
             n_phone = st.text_input("聯絡電話*")
-            n_note = st.text_area("備註")
+            n_note = st.text_area("備註內容")
             
-            if st.form_submit_button("立即送出並寫入雲端", use_container_width=True):
+            if st.form_submit_button("立即送出並同步雲端", use_container_width=True):
                 if n_name and n_phone:
-                    # 依據 Excel 表頭順序準備一列資料
+                    # 依據標題順序準備一列資料
                     new_row = [
                         n_name,
                         n_parent,
@@ -180,7 +187,7 @@ def main():
                     st.error("姓名與電話為必填項")
 
         st.divider()
-        st.caption("📍 系統已連動您的私有 Google Sheet。")
+        st.caption("📍 資料將會永久保存在您的試算表中。")
 
 if __name__ == "__main__":
     main()
