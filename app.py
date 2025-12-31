@@ -12,7 +12,7 @@ import re
 # 0. 基礎配置與專業 UI 樣式
 # ==========================================
 st.set_page_config(
-    page_title="新生與園務管理系統 - 穩定修復版",
+    page_title="新生與園務管理系統 - 智慧修復版",
     layout="wide",
     page_icon="🏫",
     initial_sidebar_state="expanded"
@@ -77,11 +77,9 @@ def convert_google_sheet_url(url):
     if not url or "docs.google.com" not in url:
         return url
     try:
-        # 提取 File ID
         file_id_match = re.search(r'/d/([a-zA-Z0-9-_]+)', url)
         if not file_id_match: return url
         file_id = file_id_match.group(1)
-        # 提取 gid (工作表 ID)
         gid = "0"
         gid_match = re.search(r'gid=([0-9]+)', url)
         if gid_match:
@@ -90,21 +88,55 @@ def convert_google_sheet_url(url):
     except:
         return url
 
+def fuzzy_map_columns(df):
+    """智慧欄位對應：解決 Google 表單標題不一致的問題"""
+    mapping = {
+        "幼兒姓名": ["幼兒姓名", "學生姓名", "小孩姓名", "姓名", "Child Name", "Name"],
+        "電話": ["電話", "聯絡電話", "手機", "Phone", "Mobile"],
+        "幼兒生日": ["幼兒生日", "生日", "出生日期", "Birthday", "DOB"],
+        "家長稱呼": ["家長稱呼", "家長姓名", "聯絡人", "Parent", "Contact"],
+        "登記日期": ["登記日期", "時間戳記", "Timestamp", "Date"],
+        "備註": ["備註", "備註事項", "Note", "Comment"]
+    }
+    
+    new_df = pd.DataFrame(columns=FINAL_COLS)
+    for target, patterns in mapping.items():
+        for pattern in patterns:
+            found_col = next((c for c in df.columns if pattern in c), None)
+            if found_col:
+                new_df[target] = df[found_col]
+                break
+    
+    # 補足其他必要欄位
+    for col in FINAL_COLS:
+        if col not in new_df.columns or new_df[col].isnull().all():
+            new_df[col] = ""
+            
+    # 預設狀態
+    new_df["報名狀態"] = new_df["報名狀態"].apply(lambda x: x if x else "預約參觀")
+    new_df["聯繫狀態"] = new_df["聯繫狀態"].apply(lambda x: x if x else "未聯繫")
+    new_df["重要性"] = new_df["重要性"].apply(lambda x: x if x else "中")
+    
+    return new_df
+
 def parse_roc_date(s):
-    """解析民國日期字串"""
+    """解析民國或西元日期"""
     try:
         s = str(s).strip()
         if not s or s.lower() == 'nan': return None
+        # 處理西元格式 YYYY/MM/DD
+        if len(s.split('/')[0]) == 4:
+            dt = datetime.strptime(s, '%Y/%m/%d')
+            return dt.date()
+        # 處理民國格式 ROC/MM/DD
         parts = s.replace("-", "/").replace(".", "/").split("/")
         return date(int(parts[0]) + 1911, int(parts[1]), int(parts[2]))
     except:
         return None
 
 def get_grade_logic(birth_date, target_roc_year):
-    """計算指定學年的年段"""
     if not birth_date: return "未知"
     by_roc = birth_date.year - 1911
-    # 9/2 分界
     is_late = (birth_date.month > 9) or (birth_date.month == 9 and birth_date.day >= 2)
     age = target_roc_year - by_roc - (1 if is_late else 0)
     grades = {0: "托嬰中心", 1: "托嬰中心", 2: "幼幼班", 3: "小班", 4: "中班", 5: "大班"}
@@ -113,47 +145,41 @@ def get_grade_logic(birth_date, target_roc_year):
 # ==========================================
 # 2. 穩定資料存取層
 # ==========================================
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=10)
 def load_data(gs_url):
     df = pd.DataFrame(columns=FINAL_COLS)
     logs = []
 
-    # 1. 嘗試雲端抓取
     if gs_url:
         csv_url = convert_google_sheet_url(gs_url)
         try:
             resp = requests.get(csv_url, timeout=10)
             if resp.status_code == 200:
-                df = pd.read_csv(StringIO(resp.text), dtype=str)
+                raw_df = pd.read_csv(StringIO(resp.text), dtype=str)
+                df = fuzzy_map_columns(raw_df)
                 logs.append("✅ 雲端連線成功")
-                # 雲端成功後，同時更新本地備份
                 df.to_csv(LOCAL_CSV, index=False, encoding="utf-8-sig")
             else:
-                logs.append(f"❌ 雲端連線失敗 (HTTP {resp.status_code})")
+                logs.append(f"❌ 雲端失敗 (HTTP {resp.status_code})")
         except Exception as e:
-            logs.append(f"❌ 雲端讀取錯誤: {str(e)}")
+            logs.append(f"❌ 雲端錯誤: {str(e)}")
 
-    # 2. 雲端失敗或未設定，則讀取本地備份
     if df.empty and os.path.exists(LOCAL_CSV):
         try:
             df = pd.read_csv(LOCAL_CSV, dtype=str)
-            logs.append("🏠 正在使用本地備份資料")
+            logs.append("🏠 使用本地備份")
         except:
-            logs.append("⚠️ 本地檔案損壞或無法讀取")
+            logs.append("⚠️ 讀取失敗")
 
-    # 3. 資料欄位對齊與標準化
     df = df.fillna("").astype(str)
     for col in FINAL_COLS:
         if col not in df.columns: df[col] = ""
     
-    # 強制重設索引，確保 update 時匹配正確
     df = df.reset_index(drop=True)
     return df[FINAL_COLS], " | ".join(logs)
 
 def save_data(df):
-    """將資料存入本地資料庫"""
     try:
-        # 只存正式欄位
         save_df = df[FINAL_COLS].fillna("").astype(str)
         save_df.to_csv(LOCAL_CSV, index=False, encoding="utf-8-sig")
         load_data.clear()
@@ -163,7 +189,7 @@ def save_data(df):
         return False
 
 # ==========================================
-# 3. 功能頁面模組
+# 3. 功能頁面
 # ==========================================
 
 def page_dashboard(df):
@@ -184,22 +210,18 @@ def page_dashboard(df):
 def page_manage(df):
     st.markdown("<div class='main-title'>📂 數據管理中心 (全員瀏覽)</div>", unsafe_allow_html=True)
     
-    search = st.text_input("🔍 搜尋名單 (請輸入姓名或電話)", placeholder="快速找人...")
+    search = st.text_input("🔍 搜尋名單 (輸入姓名或電話)", placeholder="快速找人...")
     
-    # 預處理顯示用欄位
     display_df = df.copy()
     display_df["已聯繫"] = display_df["聯繫狀態"] == "已聯繫"
     
-    # 執行過濾
     if search:
         display_df = display_df[display_df.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)]
     else:
-        # 預設按日期倒序顯示
         display_df = display_df.iloc[::-1]
     
     st.info(f"📊 目前共有 {len(display_df)} 筆資料正在顯示")
 
-    # 編輯表格
     edited = st.data_editor(
         display_df,
         column_order=["登記日期", "已聯繫", "報名狀態", "重要性", "幼兒姓名", "家長稱呼", "電話", "幼兒生日", "備註"],
@@ -218,19 +240,10 @@ def page_manage(df):
     
     st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
     if st.button("💾 儲存修改內容", type="primary", use_container_width=True):
-        # 將「已聯繫」checkbox 轉回文字狀態
         edited["聯繫狀態"] = edited["已聯繫"].apply(lambda x: "已聯繫" if x else "未聯繫")
-        
-        # 智慧更新：如果是過濾後的資料，只更新對應索引的行
-        # 使用 update 時，edited 必須保留原始 index
         df.update(edited)
         
-        # 處理可能的刪除或新增 (若 num_rows="dynamic" 被觸發)
-        if len(edited) != len(display_df) and not search:
-             # 如果沒有搜尋且長度改變，代表有新增或刪除
-             save_target = edited
-        else:
-             save_target = df
+        save_target = edited if (len(edited) != len(display_df) and not search) else df
             
         if save_data(save_target):
             st.success("✅ 資料已同步儲存至本地備份庫")
@@ -271,7 +284,6 @@ def page_calc(df):
     target_y = st.number_input("試算學年度", value=date.today().year-1911+1)
     ref_y = target_y - 1
     
-    # 計算舊生人數
     rising_counts = {"幼幼班": 0, "小班": 0, "中班": 0}
     for _, r in df.iterrows():
         if r["報名狀態"] == "確認入學":
@@ -295,13 +307,12 @@ def page_calc(df):
         st.metric("師資需求 (1:8)", f"{math.ceil(max_t / 8)} 名")
 
 # ==========================================
-# 4. 主程式流程
+# 4. 主程式
 # ==========================================
 def main():
     if "gs_url" not in st.session_state: st.session_state["gs_url"] = ""
     if "auth" not in st.session_state: st.session_state["auth"] = False
 
-    # 登入邏輯
     if not st.session_state["auth"]:
         _, mid, _ = st.columns([1, 1.5, 1])
         with mid:
@@ -316,7 +327,6 @@ def main():
                     else: st.error("密碼錯誤")
         return
 
-    # 側邊欄設定
     with st.sidebar:
         st.markdown("### ⚙️ 系統設定與連結")
         gs_url_input = st.text_input("Google 試算表網址", 
@@ -328,21 +338,19 @@ def main():
             st.rerun()
             
         st.divider()
-        menu = st.radio("功能選單", ["🏠 營運儀表板", "📂 數據管理中心", "👶 手動報名登記", "👩‍🏫 師資缺額試算"])
+        menu = st.radio("功能選單", ["🏠 營運儀表板", "👶 手動報名登記", "📂 數據管理中心", "👩‍🏫 師資缺額試算"])
         
         st.divider()
         if st.button("🚪 安全登出", use_container_width=True):
             st.session_state["auth"] = False
             st.rerun()
 
-    # 載入資料
     df, log_msg = load_data(st.session_state["gs_url"])
     st.caption(f"數據連線狀態：{log_msg}")
 
-    # 分頁導覽
     if menu == "🏠 營運儀表板": page_dashboard(df)
-    elif menu == "📂 數據管理中心": page_manage(df)
     elif menu == "👶 手動報名登記": page_add()
+    elif menu == "📂 數據管理中心": page_manage(df)
     elif menu == "👩‍🏫 師資缺額試算": page_calc(df)
 
 if __name__ == "__main__":
