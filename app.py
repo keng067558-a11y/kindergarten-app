@@ -12,7 +12,7 @@ from io import StringIO
 # 0. 基礎配置與專業 UI 樣式
 # ==========================================
 st.set_page_config(
-    page_title="新生與園務管理系統 - 雲端同步版",
+    page_title="新生與園務管理系統 - 雲端同步穩定版",
     layout="wide",
     page_icon="🏫",
     initial_sidebar_state="expanded"
@@ -28,6 +28,7 @@ st.markdown("""
         --accent-color: #3B82F6;
         --bg-color: #F8FAFC;
         --border-color: #E2E8F0;
+        --error-red: #EF4444;
     }
 
     html, body, [class*="css"] {
@@ -57,6 +58,15 @@ st.markdown("""
         font-weight: 500;
         transition: all 0.2s ease;
     }
+    
+    .sidebar-help {
+        font-size: 0.85rem;
+        color: #64748B;
+        background: #F1F5F9;
+        padding: 10px;
+        border-radius: 8px;
+        margin-top: 10px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -77,13 +87,17 @@ def convert_google_sheet_url(url):
     if not url or "docs.google.com" not in url:
         return url
     try:
-        file_id_match = re.search(r'/d/([a-zA-Z0-9-_]+)', url)
+        # 移除網址結尾的編輯參數
+        clean_url = url.split('/edit')[0]
+        file_id_match = re.search(r'/d/([a-zA-Z0-9-_]+)', clean_url)
         if not file_id_match: return url
         file_id = file_id_match.group(1)
+        
         gid = "0"
         gid_match = re.search(r'gid=([0-9]+)', url)
         if gid_match:
             gid = gid_match.group(1)
+            
         return f"https://docs.google.com/spreadsheets/d/{file_id}/export?format=csv&gid={gid}"
     except:
         return url
@@ -108,7 +122,7 @@ def fuzzy_map_columns(df):
                 new_df[target] = df[found_col]
                 break
     
-    # 補足缺失欄位並給予預設值
+    # 補足缺失欄位並與預設值
     for col in FINAL_COLS:
         if col not in new_df.columns:
             new_df[col] = ""
@@ -158,6 +172,8 @@ def load_data(gs_url=None):
                 log = "✅ 雲端連線成功"
                 # 自動備份至本地
                 df.to_csv(LOCAL_CSV, index=False, encoding="utf-8-sig")
+            elif resp.status_code == 401 or resp.status_code == 403:
+                log = "❌ 權限錯誤 (401/403)：請將 Google 試算表共用權限改為「知道連結的人均可檢視」"
             else:
                 log = f"❌ 雲端抓取失敗 (代碼 {resp.status_code})"
         except Exception as e:
@@ -337,11 +353,21 @@ def main():
         st.markdown("#### ☁️ 雲端同步設定")
         gs_url_input = st.text_input("Google 試算表網址", 
                                      value=st.session_state["gs_url"], 
-                                     placeholder="直接貼上網址即可...")
+                                     placeholder="請直接貼上網址即可...")
+        
         if gs_url_input != st.session_state["gs_url"]:
             st.session_state["gs_url"] = gs_url_input
             st.cache_data.clear()
             st.rerun()
+            
+        st.markdown("""
+        <div class="sidebar-help">
+        🔑 <b>解決 401 錯誤：</b><br>
+        1. 打開 Google 試算表<br>
+        2. 點擊右上角「共用」<br>
+        3. 將權限改為「知道連結的人均可檢視」
+        </div>
+        """, unsafe_allow_html=True)
             
         if st.button("🔄 強制刷新雲端數據", use_container_width=True):
             st.cache_data.clear()
@@ -357,7 +383,14 @@ def main():
 
     # 載入資料 (優先從側邊欄網址抓取)
     df, log_msg = load_data(st.session_state["gs_url"])
-    st.caption(f"📊 狀態：{log_msg}")
+    
+    # 狀態顯示優化
+    if "❌ 權限錯誤" in log_msg:
+        st.sidebar.error(log_msg)
+    elif "❌" in log_msg:
+        st.sidebar.warning(log_msg)
+    else:
+        st.sidebar.info(log_msg)
 
     if menu == "🏠 營運儀表板": page_dashboard(df)
     elif menu == "👶 手動報名登記": page_add()
