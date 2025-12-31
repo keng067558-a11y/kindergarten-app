@@ -135,25 +135,37 @@ def calculate_roadmap(dob: date):
             roadmap.append(f"{target} 學年 - {grade}")
     return roadmap or ["年齡不符"]
 
+# 網址轉換函數：將 Google Sheets 的編輯網址轉為 CSV 匯出網址
+def convert_google_sheet_url(url):
+    if "docs.google.com/spreadsheets/d/" in url:
+        parts = url.split('/')
+        if len(parts) > 5:
+            file_id = parts[5]
+            # 確保檔案已開啟「知道連結的人即可檢視」
+            return f"https://docs.google.com/spreadsheets/d/{file_id}/export?format=csv"
+    return url
+
 # ==========================================
 # 2. 資料存取層 (支援雲端讀取)
 # ==========================================
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=10) # 測試期間縮短緩存時間，讓更新更即時
 def load_data(gs_url=None):
     df = pd.DataFrame(columns=FINAL_COLS)
     
-    # 優先嘗試從 Google Sheets 載入
-    if gs_url and "docs.google.com" in gs_url:
+    if gs_url:
+        csv_url = convert_google_sheet_url(gs_url)
         try:
-            response = requests.get(gs_url, timeout=10)
+            response = requests.get(csv_url, timeout=10)
             if response.status_code == 200:
                 cloud_df = pd.read_csv(StringIO(response.text), dtype=str)
                 df = cloud_df
                 st.toast("✅ 已成功同步雲端數據")
+            else:
+                st.error(f"雲端連線失敗，請檢查試算表是否已開啟「知道連結的人即可檢視」共用權限。")
         except Exception as e:
-            st.warning(f"雲端同步失敗。錯誤：{e}")
+            st.warning(f"雲端讀取失敗。錯誤訊息：{e}")
 
-    # 本地備份讀取（若雲端沒抓到或沒設定）
+    # 本地備份讀取（若雲端沒抓到或未設定）
     if df.empty and os.path.exists(LOCAL_CSV):
         try:
             df = pd.read_csv(LOCAL_CSV, dtype=str)
@@ -218,7 +230,7 @@ def page_dashboard(df):
 
 def page_add():
     st.markdown("<div class='main-title'>新生登記作業</div>", unsafe_allow_html=True)
-    st.info("💡 建議直接讓家長填寫 Google 表單。若需手動補錄，請填寫下方欄位：")
+    st.info("💡 您可以直接將此網址貼給家長填寫。若需手動補錄，請填寫下方欄位：")
     with st.container(border=True):
         c1, c2 = st.columns(2)
         with c1:
@@ -296,8 +308,6 @@ def page_manage(df):
         edited_df["聯繫狀態"] = edited_df["已聯繫"].apply(lambda x: "已聯繫" if x else "未聯繫")
         
         if search_kw:
-            # 使用 update 需要確保索引對齊，此處為簡化邏輯直接合併
-            # 若數據量極大建議優化此處
             full_df.update(edited_df)
             save_target = full_df
         else:
@@ -358,7 +368,7 @@ def page_preview(df):
         cols = st.columns(len(grades))
         for i, g in enumerate(grades):
             with cols[i]:
-                g_count = len(pdf[pdf["級別" if "級別" in pdf.columns else "班級"] == g])
+                g_count = len(pdf[pdf["班級"] == g]) if not pdf.empty else 0
                 st.markdown(f"**{g}**")
                 st.markdown(f"<div style='font-size:1.8rem; font-weight:700;'>{g_count}</div>", unsafe_allow_html=True)
                 with st.expander("名單"):
@@ -405,18 +415,24 @@ def main():
         st.markdown("<div style='text-align:center; padding: 1rem;'><h2 style='margin:0;'>🏫</h2><h4 style='margin:0;'>園所管理系統</h4></div>", unsafe_allow_html=True)
         
         st.divider()
-        # --- 雲端同步設定 (移至側邊欄，使其隨時可見) ---
+        # --- 雲端同步設定 ---
         st.markdown("### ☁️ 雲端同步設定")
-        st.markdown("<div class='sidebar-label'>請輸入 Google 試算表 CSV 網址：</div>", unsafe_allow_html=True)
-        gs_url_input = st.text_input("CSV URL", 
+        st.markdown("<div class='sidebar-label'>直接貼上 Google 試算表網址：</div>", unsafe_allow_html=True)
+        gs_url_input = st.text_input("試算表網址", 
                                      value=st.session_state["gs_url"],
-                                     placeholder="貼上網址...",
+                                     placeholder="貼上網址即可，系統會自動轉換...",
                                      label_visibility="collapsed")
         
         if gs_url_input != st.session_state["gs_url"]:
             st.session_state["gs_url"] = gs_url_input
             st.cache_data.clear()
             st.rerun()
+        
+        # 顯示轉換後的狀態提示
+        if st.session_state["gs_url"]:
+            st.success("✨ 網址已格式化並開始同步")
+        else:
+            st.warning("⚠️ 請貼上網址以啟用雲端同步")
             
         if st.button("🔄 手動刷新雲端數據", use_container_width=True):
             st.cache_data.clear()
