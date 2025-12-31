@@ -5,7 +5,7 @@ import math
 import time
 
 # ==========================================
-# 0. 基礎配置與 CSS 優化
+# 0. 基礎配置與 CSS 優化 (專業版)
 # ==========================================
 st.set_page_config(
     page_title="新生管理系統 - 專業版",
@@ -84,6 +84,7 @@ st.markdown("""
 # ==========================================
 NEW_STATUS_OPTIONS = ["預約參觀", "排隊等待", "確認入學", "確定不收"]
 IMPORTANCE_OPTIONS = ["優", "中", "差"]
+# 排序用權重
 GRADE_ORDER = {"大班": 1, "中班": 2, "小班": 3, "幼幼班": 4, "托嬰中心": 5, "未知": 6, "畢業/超齡": 7, "年齡不符": 8}
 PRIORITY_ORDER = {"優": 1, "中": 2, "差": 3}
 
@@ -107,6 +108,7 @@ def parse_roc_date(s: str):
     if not s: return None
     try:
         parts = s.replace("-", "/").replace(".", "/").split("/")
+        # 民國轉西元
         return date(int(parts[0]) + 1911, int(parts[1]), int(parts[2]))
     except: return None
 
@@ -116,6 +118,7 @@ def to_roc_str(d: date) -> str:
 def get_grade_logic(birth_date: date, target_roc_year: int) -> str:
     if not birth_date: return "未知"
     by_roc = birth_date.year - 1911
+    # 9/2 分界線
     is_late = (birth_date.month > 9) or (birth_date.month == 9 and birth_date.day >= 2)
     age = target_roc_year - by_roc - (1 if is_late else 0)
     grades = {0: "托嬰中心", 1: "托嬰中心", 2: "幼幼班", 3: "小班", 4: "中班", 5: "大班"}
@@ -144,6 +147,7 @@ def load_data():
         df = pd.DataFrame(columns=FINAL_COLS)
     
     df = df.fillna("").astype(str)
+    # 補齊缺失欄位
     for c in FINAL_COLS:
         if c not in df.columns: df[c] = ""
     df["電話"] = df["電話"].apply(normalize_phone)
@@ -152,12 +156,14 @@ def load_data():
 
 def save_data(df: pd.DataFrame):
     try:
-        # 只保留原始欄位儲存
+        # 只保留原始資料欄位，移除 UI 輔助用欄位
         save_df = df.copy()
+        # 確保只存 FINAL_COLS 定義的欄位，防止衝突
         valid_cols = [c for c in FINAL_COLS if c in save_df.columns]
         save_df = save_df[valid_cols].fillna("").astype(str)
         save_df.to_csv(LOCAL_CSV, index=False, encoding="utf-8-sig")
-        load_data.clear() # 清除快取，確保下次載入是新的
+        # 清除快取以便下次載入最新資料
+        load_data.clear()
         return True
     except Exception as e:
         st.error(f"數據儲存失敗：{e}")
@@ -194,7 +200,7 @@ def page_dashboard(df):
     c1, c2 = st.columns([2, 1])
     with c1:
         st.markdown("##### 📌 最近登記 (前 10 筆)")
-        # 顯示最後加入的人
+        # 倒序顯示最新的人
         st.dataframe(df.tail(10).iloc[::-1][["登記日期", "幼兒姓名", "家長稱呼", "報名狀態"]], use_container_width=True, hide_index=True)
     with c2:
         st.markdown("##### 📈 狀態比例")
@@ -257,23 +263,23 @@ def page_add():
                 st.rerun()
 
 def page_manage(df):
-    st.markdown("<div class='main-title'>📂 數據管理中心 (全名單)</div>", unsafe_allow_html=True)
+    st.markdown("<div class='main-title'>📂 數據管理中心 (全員名單)</div>", unsafe_allow_html=True)
     
-    # 1. 搜尋條 (最優先)
-    search_kw = st.text_input("🔍 快速找人 (姓名或電話)", placeholder="輸入關鍵字...")
+    # --- 1. 搜尋條 (預設最明顯) ---
+    search_kw = st.text_input("🔍 關鍵字搜尋 (姓名或電話)", placeholder="輸入關鍵字直接過濾...")
 
-    # 2. 進階篩選工具 (收納起來)
-    with st.expander("🛠️ 進階篩選與招生分配工具"):
+    # --- 2. 工具面板 (收納式) ---
+    with st.expander("🛠️ 進階招生與分班工具 (計算年段與過濾)"):
         c1, c2 = st.columns(2)
         today = date.today()
         default_roc = today.year - 1911 - (1 if today.month < 8 else 0)
-        recruit_year = c1.number_input("🎯 設定試算學年", value=default_roc + 1, help="計算以此學年為準時，孩子應該讀哪一班")
+        recruit_year = c1.number_input("🎯 設定目標學年", value=default_roc + 1, help="以此學年為基準計算小朋友的班級")
         filter_grade = c2.selectbox("📂 篩選特定班級", ["顯示全部"] + list(GRADE_ORDER.keys()))
 
-    # --- 數據處理邏輯 ---
+    # --- 3. 數據邏輯處理 ---
     work_df = df.copy()
     
-    # 計算輔助欄位 (不存檔，僅供顯示與排序)
+    # 計算輔助欄位：以此學年基準的「分配班級」
     def get_temp_grade(b_str):
         dob = parse_roc_date(b_str)
         return get_grade_logic(dob, int(recruit_year))
@@ -282,26 +288,27 @@ def page_manage(df):
     work_df["排序權重"] = work_df["分配班級"].map(GRADE_ORDER).fillna(9)
     work_df["已聯繫"] = work_df["聯繫狀態"] == "已聯繫"
     
-    # 執行篩選
+    # A. 搜尋過濾
     if search_kw:
         work_df = work_df[work_df.astype(str).apply(lambda x: x.str.contains(search_kw, case=False)).any(axis=1)]
     
+    # B. 班級過濾
     if filter_grade != "顯示全部":
         work_df = work_df[work_df["分配班級"] == filter_grade]
 
-    # 排序邏輯：預設讓「最新登記」的人在最上面，除非選了特定班級則按權重
+    # C. 排序逻辑
+    # 如果是全名單顯示，則以「登記日期」倒序 (最新登記在最前)
     if filter_grade == "顯示全部" and not search_kw:
-        # 全部顯示時，按登記日期倒序 (最新的在上面)
         work_df = work_df.iloc[::-1]
     else:
-        # 篩選時按班級與重要性排序
+        # 如果有特定篩選，則按班級、重要性排序
         work_df["優先權重"] = work_df["重要性"].map(PRIORITY_ORDER).fillna(9)
         work_df = work_df.sort_values(by=["排序權重", "優先權重"], ascending=[True, True])
 
-    # 3. 統計與顯示
-    st.info(f"💡 目前名單共計 **{len(work_df)}** 人")
+    # --- 4. 顯示統計與表格 ---
+    st.info(f"💡 當前列表共計 **{len(work_df)}** 人")
 
-    # 4. 核心工作表格
+    # 編輯表格
     edited_df = st.data_editor(
         work_df,
         column_order=["登記日期", "已聯繫", "報名狀態", "重要性", "幼兒姓名", "家長稱呼", "電話", "幼兒生日", "分配班級", "備註"],
@@ -319,25 +326,25 @@ def page_manage(df):
         hide_index=True,
         use_container_width=True,
         num_rows="dynamic",
-        key="main_data_editor"
+        key="main_data_editor_v2"
     )
     
-    # --- 操作按鈕 ---
+    # --- 5. 操作區域 ---
     st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
     cb1, cb2, cb3 = st.columns([2, 2, 1])
     
-    if cb1.button("💾 儲存所有變更", type="primary", use_container_width=True):
-        # 寫回聯繫狀態
+    if cb1.button("💾 儲存名單變更", type="primary", use_container_width=True):
+        # 將 Checkbox 狀態寫回聯繫狀態字串
         edited_df["聯繫狀態"] = edited_df["已聯繫"].apply(lambda x: "已聯繫" if x else "未聯繫")
         if save_data(edited_df):
             st.success("✅ 資料庫更新成功！")
             time.sleep(0.5)
             st.rerun()
             
-    if cb2.download_button("📥 匯出當前清單 (CSV)", edited_df.to_csv(index=False).encode("utf-8-sig"), "student_list.csv", use_container_width=True):
+    if cb2.download_button("📥 匯出當前清單 (CSV)", edited_df.to_csv(index=False).encode("utf-8-sig"), "student_list_export.csv", use_container_width=True):
         st.toast("下載中...")
         
-    if cb3.button("🔄 重新載入", use_container_width=True):
+    if cb3.button("🔄 刷新頁面", use_container_width=True):
         load_data.clear()
         st.rerun()
 
@@ -369,7 +376,7 @@ def page_quick_check():
                 <div style='font-size: 0.9rem; color: #94A3B8;'>生日：{to_roc_str(dob)}</div>
             </div>
             """, unsafe_allow_html=True)
-            with st.expander("查看完整升學路徑預測"):
+            with st.expander("查看未來五年完整升學預測"):
                 st.table(pd.DataFrame([r.split(" - ") for r in roadmap], columns=["學年度", "預計年段"]))
 
 def page_preview(df):
@@ -400,7 +407,7 @@ def page_preview(df):
 def page_calc(df):
     st.markdown("<div class='main-title'>招生缺額與師資試算</div>", unsafe_allow_html=True)
     with st.container(border=True):
-        cal_y = st.number_input("試算目標學年", value=date.today().year - 1911 + 1)
+        cal_y = st.number_input("預計招生學年", value=date.today().year - 1911 + 1)
         ref_y = cal_y - 1
         old_counts = {"幼幼班": 0, "小班": 0, "中班": 0}
         for _, r in df.iterrows():
@@ -414,13 +421,13 @@ def page_calc(df):
         with c1:
             st.markdown("##### 🐘 3-6歲混齡區")
             st.caption(f"由 {ref_y} 學年升上之舊生共：{total_rising} 人")
-            target_mix = st.number_input("核定總名額", value=90)
+            target_mix = st.number_input("核定混齡班總額", value=90)
             ratio = 12 if cal_y >= 115 else 15
-            st.metric("剩餘對外招收名額", f"{max(0, target_mix - total_rising)} 人")
+            st.metric("可對外招生缺額", f"{max(0, target_mix - total_rising)} 人")
             st.metric(f"所需師資 (依 1:{ratio})", f"{math.ceil(target_mix / ratio)} 名")
         with c2:
             st.markdown("##### 🐥 2-3歲幼幼班")
-            target_t = st.number_input("預計招收名額", value=16)
+            target_t = st.number_input("幼幼班核定名額", value=16)
             st.metric("幼幼班總收托", f"{target_t} 人")
             st.metric("所需師資 (依 1:8)", f"{math.ceil(target_t / 8)} 名")
 
@@ -431,10 +438,9 @@ def main():
     if not login_screen(): return
     with st.sidebar:
         st.markdown("<div style='text-align:center; padding: 1rem;'><h2 style='margin:0;'>🏫</h2><h4 style='margin:0;'>園所管理系統</h4></div>", unsafe_allow_html=True)
-        menu = st.radio("主要功能", ["🏠 營運儀表板", "👶 新生報名登記", "📂 數據管理中心", "🎓 學年快速查詢", "📅 未來入學預覽", "👩‍🏫 招生師資試算"])
+        menu = st.radio("主要功能導覽", ["🏠 營運儀表板", "👶 新生報名登記", "📂 數據管理中心", "🎓 學年快速查詢", "📅 未來入學預覽", "👩‍🏫 招生師資試算"])
         st.divider()
-        st.caption(f"連線狀態：正常")
-        st.caption(f"系統時間：{to_roc_str(date.today())}")
+        st.caption(f"今日：{to_roc_str(date.today())}")
         if st.button("🚪 安全登出", use_container_width=True):
             st.session_state["authenticated"] = False
             st.rerun()
