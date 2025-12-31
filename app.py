@@ -2,219 +2,178 @@ import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 from datetime import date, datetime
+import os
 
 # ==========================================
-# 0. 系統環境設定
+# 0. 系統核心設定
 # ==========================================
-st.set_page_config(page_title="幼兒園雲端管理系統", layout="wide", page_icon="🏫")
+st.set_page_config(page_title="幼兒園管理系統 2.0", layout="wide", page_icon="📝")
 
-# 自定義 CSS 美化
+# 系統樣式
 st.markdown("""
 <style>
-    .main-title { font-size: 2.5rem; font-weight: 800; color: #1E3A8A; margin-bottom: 1rem; }
-    .stMetric { background-color: #F0F9FF; padding: 15px; border-radius: 10px; border: 1px solid #BAE6FD; }
-    .status-box { padding: 10px; border-radius: 5px; margin-bottom: 10px; }
+    .main-header { font-size: 2.2rem; font-weight: 700; color: #1E40AF; margin-bottom: 20px; }
+    .status-card { padding: 20px; border-radius: 12px; background-color: #F8FAFC; border: 1px solid #E2E8F0; }
+    .stButton>button { border-radius: 8px; }
 </style>
 """, unsafe_allow_html=True)
 
-# ==========================================
-# 1. 核心邏輯函式 (學號與年齡推算)
-# ==========================================
+LOCAL_FILE = "local_backup.csv"
 
-def get_grade_calculation(birth_date_str):
-    """根據生日推算 9/1 入學後的班別"""
+# ==========================================
+# 1. 核心邏輯：班別推算
+# ==========================================
+def calculate_grade(birth_date):
+    """根據生日推算 9/1 入學班別 (台灣學制)"""
+    if pd.isna(birth_date) or not birth_date:
+        return "資料不全"
     try:
-        if pd.isna(birth_date_str) or not birth_date_str: return "資料遺失"
-        # 轉換為日期格式
-        dob = pd.to_datetime(birth_date_str)
+        dob = pd.to_datetime(birth_date)
         today = date.today()
-        
-        # 判斷目標學年度：現在若是 1-8 月，目標是今年 9 月入學；若是 9-12 月，目標是明年 9 月
-        target_year = today.year if today.month < 9 else today.year + 1
-        ref_date = datetime(target_year, 9, 1)
+        # 計算基準年 (今年 8月以前入學看今年，9月以後入學看明年)
+        ref_year = today.year if today.month < 9 else today.year + 1
+        ref_date = datetime(ref_year, 9, 1)
         
         # 足歲計算
-        age = ref_date.year - dob.year - ((ref_date.month, ref_date.day) < (dob.month, dob.day))
+        age = ref_year - dob.year - ((ref_date.month, ref_date.day) < (dob.month, dob.day))
         
+        mapping = {2: "幼幼班", 3: "小班", 4: "中班", 5: "大班"}
         if age < 2: return "未足齡"
-        elif age == 2: return "幼幼班"
-        elif age == 3: return "小班"
-        elif age == 4: return "中班"
-        elif age == 5: return "大班"
-        else: return f"超齡({age}歲)"
-    except Exception:
-        return "格式錯誤"
+        return mapping.get(age, f"超齡({age}歲)")
+    except:
+        return "日期錯誤"
 
 # ==========================================
-# 2. Google Sheets 連線與資料處理
+# 2. 資料存取層 (Google Sheets + Local Backup)
 # ==========================================
-
-# 建立連線物件
-conn = st.connection("gsheets", type=GSheetsConnection)
-
-def fetch_data():
-    """從雲端讀取資料並確保管理欄位存在"""
-    # ttl="0" 確保資料即時性
-    df = conn.read(ttl="0")
+def get_data():
+    """獲取資料：嘗試雲端，失敗則抓取本機 CSV"""
+    df = pd.DataFrame()
+    mode = "Cloud"
     
-    # 確保原始資料不為空
-    if df.empty:
-        return pd.DataFrame()
+    # 1. 嘗試雲端連線
+    try:
+        conn = st.connection("gsheets", type=GSheetsConnection)
+        df = conn.read(ttl="0")
+        st.session_state["mode"] = "☁️ 雲端同步模式"
+    except Exception as e:
+        mode = "Local"
+        st.session_state["mode"] = "💾 本機作業模式 (雲端未連線)"
+        if os.path.exists(LOCAL_FILE):
+            df = pd.read_csv(LOCAL_FILE)
+        else:
+            # 建立空資料表
+            df = pd.DataFrame(columns=["時間戳記", "幼兒姓名", "家長電話", "幼兒生日", "處理狀態", "老師備註"])
 
-    # 清洗欄位：去除前後空白
-    df.columns = [c.strip() for c in df.columns]
-
-    # 自動補齊管理用的必要欄位
-    admin_fields = {
-        "處理狀態": "待處理",
-        "老師備註": "",
-        "重要性": "普通"
-    }
-    
-    for col, default_val in admin_fields.items():
+    # 2. 確保必要欄位
+    required = ["處理狀態", "老師備註", "重要性"]
+    for col in required:
         if col not in df.columns:
-            df[col] = default_val
+            df[col] = "待處理" if col == "處理狀態" else ("普通" if col == "重要性" else "")
             
-    # 移除全空的列
-    df = df.dropna(how='all')
-    return df
+    return df.fillna("")
+
+def save_data(df):
+    """存檔：同時儲存至本機並嘗試同步雲端"""
+    # 儲存本機備份
+    df.to_csv(LOCAL_FILE, index=False, encoding="utf-8-sig")
+    
+    # 嘗試同步雲端
+    try:
+        conn = st.connection("gsheets", type=GSheetsConnection)
+        conn.update(data=df)
+        return True, "同步成功"
+    except Exception as e:
+        return False, str(e)
 
 # ==========================================
-# 3. 系統 UI 介面
+# 3. 主介面
 # ==========================================
-
 def main():
-    if "authenticated" not in st.session_state:
-        st.session_state.authenticated = False
+    st.markdown('<div class="main-header">🏫 幼兒園管理系統 2.0</div>', unsafe_allow_html=True)
 
-    # --- 登入介面 ---
-    if not st.session_state.authenticated:
-        st.markdown('<p class="main-title">🔐 幼兒園雲端後台登入</p>', unsafe_allow_html=True)
-        col_l, col_r = st.columns([1, 2])
-        with col_l:
-            pwd = st.text_input("管理員密碼", type="password")
-            if st.button("確認進入", use_container_width=True):
-                if pwd == st.secrets.get("password", "admin123"):
-                    st.session_state.authenticated = True
+    # --- 登入檢查 ---
+    if "logged_in" not in st.session_state:
+        st.session_state.logged_in = False
+
+    if not st.session_state.logged_in:
+        col1, _ = st.columns([1, 2])
+        with col1:
+            pw = st.text_input("請輸入系統密碼", type="password")
+            if st.button("進入系統"):
+                if pw == st.secrets.get("password", "admin"):
+                    st.session_state.logged_in = True
                     st.rerun()
                 else:
-                    st.error("密碼錯誤，請重新輸入")
+                    st.error("密碼錯誤")
         return
 
-    # --- 側邊欄設定 ---
+    # --- 側邊欄：診斷與設定 ---
     with st.sidebar:
-        st.header("⚙️ 系統設定")
-        if st.button("🔄 刷新雲端資料"):
+        st.header("🛠️ 系統狀態")
+        df = get_data()
+        st.success(st.session_state.get("mode", "初始化中"))
+        
+        if st.button("🔄 重新載入雲端資料"):
             st.cache_data.clear()
             st.rerun()
-        
+            
         st.divider()
-        st.markdown("### 🔑 連線檢索")
-        try:
-            # 顯示服務帳號供使用者去 Google Sheet 共用
-            s_account = st.secrets["connections"]["gsheets"]["client_email"]
-            st.caption("請確保已將試算表共用給：")
-            st.code(s_account, language="text")
-        except:
-            st.warning("尚未設定 secrets.toml 憑證")
+        st.info("💡 操作說明：直接在下方表格修改資料，改完後點擊最下方的『儲存』按鈕即可更新雲端試算表。")
 
-    st.markdown('<p class="main-title">🏫 新生入學管理看板</p>', unsafe_allow_html=True)
+    # --- 資料摘要 ---
+    c1, c2, c3 = st.columns(3)
+    c1.metric("總登記人數", len(df))
+    c2.metric("待處理", len(df[df["處理狀態"] == "待處理"]))
+    c3.metric("本週新增", 0) # 暫留功能
+
+    # --- 搜尋功能 ---
+    search = st.text_input("🔍 搜尋姓名或電話", "")
+    if search:
+        df_display = df[df.astype(str).apply(lambda x: x.str.contains(search)).any(axis=1)]
+    else:
+        df_display = df
+
+    # --- 自動班別推算 ---
+    if "幼兒生日" in df_display.columns:
+        df_display["系統推算班別"] = df_display["幼兒生日"].apply(calculate_grade)
+
+    # --- 核心編輯器 ---
+    st.subheader("📋 報名清單編修")
     
-    # --- 1. 讀取與處理資料 ---
-    try:
-        raw_df = fetch_data()
-        if raw_df.empty:
-            st.warning("目前試算表中尚無資料。請檢查 Google 表單是否有回覆。")
-            return
-    except Exception as e:
-        st.error(f"❌ 連線失敗：{e}")
-        st.info("常見原因：1. 試算表網址錯誤 2. 憑證權限不足 3. 欄位名稱衝突")
-        return
-
-    # --- 2. 數據統計 Dashboard ---
-    # 預先計算班別
-    if "幼兒生日" in raw_df.columns:
-        raw_df["系統推算班別"] = raw_df["幼兒生日"].apply(get_grade_calculation)
-    
-    c1, c2, c3, c4 = st.columns(4)
-    with c1: st.metric("總登記人數", len(raw_df))
-    with c2: 
-        pending = len(raw_df[raw_df["處理狀態"] == "待處理"])
-        st.metric("待處理名單", pending, delta=f"{pending} 筆", delta_color="inverse")
-    with c3:
-        confirmed = len(raw_df[raw_df["處理狀態"] == "確認入學"])
-        st.metric("已確認入學", confirmed)
-    with c4:
-        st.metric("今日新增", len(raw_df[raw_df.iloc[:, 0].astype(str).str.contains(date.today().strftime('%Y/%m/%d'), na=False)]))
-
-    st.divider()
-
-    # --- 3. 管理工具與搜尋 ---
-    with st.expander("🔍 進階搜尋與過濾選項"):
-        sc1, sc2, sc3 = st.columns(3)
-        with sc1:
-            q = st.text_input("搜尋關鍵字 (姓名/電話/備註)")
-        with sc2:
-            st_filter = st.multiselect("處理狀態過濾", options=raw_df["處理狀態"].unique().tolist())
-        with sc3:
-            # 假設有班別欄位
-            grade_options = raw_df["系統推算班別"].unique().tolist() if "系統推算班別" in raw_df.columns else []
-            gr_filter = st.multiselect("班別過濾", options=grade_options)
-
-    # 執行篩選邏輯
-    filtered_df = raw_df.copy()
-    if q:
-        filtered_df = filtered_df[filtered_df.astype(str).apply(lambda x: x.str.contains(q)).any(axis=1)]
-    if st_filter:
-        filtered_df = filtered_df[filtered_df["處理狀態"].isin(st_filter)]
-    if gr_filter:
-        filtered_df = filtered_df[filtered_df["系統推算班別"].isin(gr_filter)]
-
-    # --- 4. 資料編輯器 ---
-    st.subheader("📋 資料明細編修")
-    st.caption("可以直接在表格內修改，完成後請點擊下方「同步至雲端」按鈕")
-    
-    # 動態欄位設定
-    col_config = {
+    # 配置欄位樣式
+    config = {
         "處理狀態": st.column_config.SelectboxColumn(
             options=["待處理", "聯繫中", "預約參觀", "候補中", "確認入學", "取消報名"],
             required=True
         ),
-        "重要性": st.column_config.SelectboxColumn(
-            options=["⭐⭐⭐ (急)", "⭐⭐ (高)", "⭐ (中)", "普通"],
-        ),
+        "重要性": st.column_config.SelectboxColumn(options=["⭐⭐⭐", "⭐⭐", "⭐", "普通"]),
         "老師備註": st.column_config.TextColumn(width="large"),
-        "系統推算班別": st.column_config.TextColumn(disabled=True)
+        "系統推算班別": st.column_config.TextColumn(disabled=True),
+        "時間戳記": st.column_config.TextColumn(disabled=True)
     }
-    
-    # 如果有時間戳記欄位則禁用修改
-    if "時間戳記" in filtered_df.columns:
-        col_config["時間戳記"] = st.column_config.DatetimeColumn(disabled=True)
 
     edited_df = st.data_editor(
-        filtered_df,
+        df_display,
         use_container_width=True,
         hide_index=True,
         num_rows="dynamic",
-        column_config=col_config
+        column_config=config
     )
 
-    # --- 5. 同步與備份 ---
-    col_save, col_empty = st.columns([1, 3])
-    with col_save:
-        if st.button("💾 同步變更至 Google Sheets", type="primary", use_container_width=True):
-            with st.spinner("正在上傳資料..."):
-                try:
-                    # 這裡必須更新回原始 dataframe 的結構
-                    conn.update(data=edited_df)
-                    st.success("✅ 同步成功！")
+    # --- 儲存功能 ---
+    st.divider()
+    save_col, _ = st.columns([1, 4])
+    with save_col:
+        if st.button("💾 儲存並同步至雲端", type="primary", use_container_width=True):
+            with st.spinner("同步中..."):
+                # 將編輯過的資料合併回主資料表 (此處簡化處理，直接儲存編輯後的內容)
+                success, msg = save_data(edited_df)
+                if success:
+                    st.success("存檔成功！")
                     st.balloons()
-                except Exception as e:
-                    st.error(f"儲存發生錯誤：{e}")
-
-    # 下載功能放置於側邊欄底部
-    csv = edited_df.to_csv(index=False).encode('utf_8_sig')
-    st.sidebar.download_button("📥 匯出目前名單 (CSV)", csv, f"leads_{date.today()}.csv", "text/csv")
+                else:
+                    st.warning(f"本機已存檔，但雲端同步失敗 (原因: {msg})")
 
 if __name__ == "__main__":
     main()
