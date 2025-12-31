@@ -146,15 +146,20 @@ def load_data(gs_url):
     for col in FINAL_COLS:
         if col not in df.columns: df[col] = ""
     
+    # 強制重設索引，確保 update 時匹配正確
+    df = df.reset_index(drop=True)
     return df[FINAL_COLS], " | ".join(logs)
 
 def save_data(df):
     """將資料存入本地資料庫"""
     try:
-        df[FINAL_COLS].to_csv(LOCAL_CSV, index=False, encoding="utf-8-sig")
+        # 只存正式欄位
+        save_df = df[FINAL_COLS].fillna("").astype(str)
+        save_df.to_csv(LOCAL_CSV, index=False, encoding="utf-8-sig")
         load_data.clear()
         return True
-    except:
+    except Exception as e:
+        st.error(f"儲存失敗：{e}")
         return False
 
 # ==========================================
@@ -171,25 +176,36 @@ def page_dashboard(df):
     
     st.divider()
     st.markdown("##### 📌 最近登記名單")
-    st.dataframe(df.tail(10).iloc[::-1][["登記日期", "幼兒姓名", "家長稱呼", "報名狀態"]], use_container_width=True, hide_index=True)
+    if not df.empty:
+        st.dataframe(df.tail(10).iloc[::-1][["登記日期", "幼兒姓名", "家長稱呼", "報名狀態"]], use_container_width=True, hide_index=True)
+    else:
+        st.info("尚無登記資料。")
 
 def page_manage(df):
     st.markdown("<div class='main-title'>📂 數據管理中心 (全員瀏覽)</div>", unsafe_allow_html=True)
     
     search = st.text_input("🔍 搜尋名單 (請輸入姓名或電話)", placeholder="快速找人...")
     
-    # 這裡的邏輯：顯示過濾後的資料，但儲存時會合併回原始資料庫
+    # 預處理顯示用欄位
     display_df = df.copy()
+    display_df["已聯繫"] = display_df["聯繫狀態"] == "已聯繫"
+    
+    # 執行過濾
     if search:
         display_df = display_df[display_df.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)]
+    else:
+        # 預設按日期倒序顯示
+        display_df = display_df.iloc[::-1]
     
     st.info(f"📊 目前共有 {len(display_df)} 筆資料正在顯示")
 
     # 編輯表格
     edited = st.data_editor(
         display_df,
-        column_order=["登記日期", "報名狀態", "重要性", "幼兒姓名", "家長稱呼", "電話", "幼兒生日", "備註"],
+        column_order=["登記日期", "已聯繫", "報名狀態", "重要性", "幼兒姓名", "家長稱呼", "電話", "幼兒生日", "備註"],
         column_config={
+            "登記日期": st.column_config.TextColumn("登記日期", disabled=True),
+            "已聯繫": st.column_config.CheckboxColumn("📞 已聯繫"),
             "報名狀態": st.column_config.SelectboxColumn("狀態", options=NEW_STATUS_OPTIONS),
             "重要性": st.column_config.SelectboxColumn("優先級", options=IMPORTANCE_OPTIONS),
             "備註": st.column_config.TextColumn("備註", width="large")
@@ -202,12 +218,19 @@ def page_manage(df):
     
     st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
     if st.button("💾 儲存修改內容", type="primary", use_container_width=True):
-        # 智慧更新：如果是有搜尋的情況，只更新改動行，其餘保留
-        if search:
-            df.update(edited)
-            save_target = df
+        # 將「已聯繫」checkbox 轉回文字狀態
+        edited["聯繫狀態"] = edited["已聯繫"].apply(lambda x: "已聯繫" if x else "未聯繫")
+        
+        # 智慧更新：如果是過濾後的資料，只更新對應索引的行
+        # 使用 update 時，edited 必須保留原始 index
+        df.update(edited)
+        
+        # 處理可能的刪除或新增 (若 num_rows="dynamic" 被觸發)
+        if len(edited) != len(display_df) and not search:
+             # 如果沒有搜尋且長度改變，代表有新增或刪除
+             save_target = edited
         else:
-            save_target = edited
+             save_target = df
             
         if save_data(save_target):
             st.success("✅ 資料已同步儲存至本地備份庫")
